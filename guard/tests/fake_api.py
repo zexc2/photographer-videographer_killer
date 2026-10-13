@@ -54,6 +54,12 @@ class H(BaseHTTPRequestHandler):
                 if p["id"] == pid:
                     return self.send(200, p)
             return self.send(404, {"detail": "not found"})
+        if method == "GET" and path.startswith("/v2/global-volumes/"):
+            vid = path.split("/")[3]
+            for v in read("api_gv.json", []):
+                if v["id"] == vid:
+                    return self.send(200, v)
+            return self.send(404, {"detail": "global volume not found"})
         if method == "GET" and path == "/v2/global-volumes":
             return self.send(200, {"globalVolumes": read("api_gv.json", [])})
         if method == "GET" and path.startswith("/v2/catalog/gpus/"):

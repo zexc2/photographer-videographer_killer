@@ -11,7 +11,7 @@ python3 "$HERE/fake_api.py" $PORT & API_PID=$!
 trap 'kill $API_PID 2>/dev/null; rm -rf "$FAKE_DIR"' EXIT
 export ATLAS_RUNPOD_API="http://127.0.0.1:$PORT"
 export RUNPODCTL="$HERE/fake_runpodctl" ATLAS_GPU_SSH="$HERE/fake_ssh"
-export ATLAS_GPU_STATE="$FAKE_DIR/state" ATLAS_GPU_LOG="$FAKE_DIR/guard.log" ATLAS_GPU_CONFIG="$FAKE_DIR/none.json"
+export ATLAS_GPU_STATE="$FAKE_DIR/state" ATLAS_GPU_LOG="$FAKE_DIR/guard.log" ATLAS_GPU_CONFIG="$FAKE_DIR/config.json"
 export ATLAS_GPU_KEYFILE="$FAKE_DIR/key" ATLAS_GPU_SSH_KEY="$FAKE_DIR/sshkey"
 for i in $(seq 50); do curl -s -o /dev/null "$ATLAS_RUNPOD_API/" && break; sleep 0.1; done
 
@@ -19,10 +19,12 @@ ago() { date -u -d "-$1 minutes" +%Y-%m-%dT%H:%M:%SZ; }
 key_on()  { printf 'testkey\n' > "$FAKE_DIR/key"; chmod 600 "$FAKE_DIR/key"; }
 key_off() { rm -f "$FAKE_DIR/key"; }
 reset() {
-  rm -rf "$FAKE_DIR"/{state,calls.log,guard.log,util,busy,api_fail,create_fail,api_created.json}
+  rm -rf "$FAKE_DIR"/{state,calls.log,guard.log,util,busy,api_fail,create_fail,api_created.json,user_fail}
   key_on; touch "$FAKE_DIR/sshkey"; echo 'ssh-ed25519 AAAAtest atlas' > "$FAKE_DIR/sshkey.pub"
   echo '[]' > "$FAKE_DIR/api_pods.json"; echo '[]' > "$FAKE_DIR/pods.json"
-  echo '[{"id":"gsb_test","name":"atlas_data"}]' > "$FAKE_DIR/api_gv.json"
+  echo '[{"id":"vol_test123","name":"photographer/videographer_killer"},{"id":"vol_other99","name":"atlas_data"}]' > "$FAKE_DIR/api_gv.json"
+  echo '{"global_volume_id":"vol_test123","global_volume_label":"photographer/videographer_killer"}' > "$FAKE_DIR/config.json"
+  echo '{"clientBalance": 50.0}' > "$FAKE_DIR/user.json"
   cat > "$FAKE_DIR/api_catalog.json" <<J
 {"NVIDIA A100-SXM4-80GB":{"availability":"LOW","price":1.79},"NVIDIA A100 80GB PCIe":{"availability":"NONE","price":1.64},
  "NVIDIA H100 80GB HBM3":{"availability":"LOW","price":3.99},"NVIDIA H100 PCIe":{"availability":"NONE","price":2.89},
@@ -53,7 +55,7 @@ echo "== gpu-up"
 reset
 check "dry-run 默认参数可以通过"                 0 "$G up --dry-run"
 check "dry-run 不会真的创建"                     1 "called 'API POST /v2/pods '"
-check "选 A100 SXM、挂 Global volume、不锁区域"  0 "$G up --dry-run | grep -q 'gsb_test' && $G up --dry-run | grep -q '\"path\": \"/workspace\"' && ! $G up --dry-run | grep -q dataCenterIds"
+check "选 A100 SXM、挂 Global volume、不锁区域"  0 "$G up --dry-run | grep -q 'vol_test123' && $G up --dry-run | grep -q '\"path\": \"/workspace\"' && ! $G up --dry-run | grep -q dataCenterIds"
 check "挂载路径来自 ATLAS_VOL_MOUNT 变量"         0 "ATLAS_VOL_MOUNT=/workspace-global $G up --dry-run | grep -q '\"ATLAS_VOL\": \"/workspace-global\"'"
 check "容器盘默认 200GB"                          0 "$G up --dry-run | grep -q '\"disk\": 200'"
 check "--hours 7 被拒绝"                         1 "$G up --dry-run --hours 7"
@@ -75,10 +77,30 @@ check "PROVISIONING 的 pod 也占名额"             1 "$G up --dry-run"
 apipods "[$OTHER]"
 check "别的项目的 pod 不占名额"                   0 "$G up --dry-run"
 echo '[]' > "$FAKE_DIR/api_gv.json"
-check "找不到 Global volume 时拒绝"              1 "$G up"
+check "API 里找不到配置的 volume ID 时拒绝"      1 "$G up"
+reset
+check "按 ID 识别 volume（名字含斜杠也没问题）"  0 "$G up --dry-run | grep -q 'vol_test123（v2 API 已确认）' && $G up --dry-run | grep -q 'photographer/videographer_killer'"
+check "不按名字匹配（同名 atlas_data 的另一个 volume 不会被用）" 1 "$G up --dry-run | grep -q vol_other99"
+echo '{}' > "$FAKE_DIR/config.json"
+check "没有配置 volume ID 时拒绝（不按名字猜）"   1 "$G up --dry-run"
+echo '{"global_volume_id":"bad/id"}' > "$FAKE_DIR/config.json"
+check "非法 volume ID 被拒绝"                    1 "$G up --dry-run"
+echo '== 余额检查'
+reset; echo '{"clientBalance": 14.99}' > "$FAKE_DIR/user.json"
+check "余额 < \$15 时拒绝开 pod"                1 "$G up --wait 0"
+check "余额不足时没有创建请求"                   1 "called 'API POST /v2/pods '"
+check "余额 < \$15 时 dry-run 仍可预览并提示"   0 "$G up --dry-run | grep -q '请先充值'"
+echo '{"clientBalance": 15}' > "$FAKE_DIR/user.json"
+check "余额 = \$15 可以开"                      0 "$G up --wait 0"
+reset; touch "$FAKE_DIR/user_fail"
+check "读不到余额时拒绝开 pod"                   1 "$G up --wait 0"
+reset; echo '{"clientBalance": 20}' > "$FAKE_DIR/user.json"
+check "跑满后余额会低于 \$15 时给出提醒"         0 "$G up --dry-run --hours 6 | grep -q '建议再充值'"
+apipods "[$(pod p1 atlas-x RUNNING 10 50)]"
+check "gpu-status 显示余额"                       0 "$G status | grep -q '账户余额: \$20.00'"
 reset; key_off
 check "没有 API key 时真开 pod 被拒绝"           1 "$G up"
-check "没有 API key 时 dry-run 用 runpodctl 预览" 0 "$G up --dry-run | grep -q GLOBAL_VOLUME_ID"
+check "没有 API key 时 dry-run 用 runpodctl 预览" 0 "$G up --dry-run | grep -q '未经 API 确认'"
 reset; chmod 644 "$FAKE_DIR/key"
 check "key 文件权限过宽时拒绝"                    1 "$G up"
 reset

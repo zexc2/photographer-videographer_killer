@@ -8,6 +8,7 @@
   gpu-guard   巡检（cron 每 10 分钟）：超时 → stop；GPU 连续 30 分钟空闲 → stop
 
 后端
+- 余额：v2 API 没有余额接口，用 runpodctl user 读取；余额 < $15 或读不到时拒绝开 pod。
 - 主路径：RunPod REST API v2（https://api.runpod.io/v2）。Global volume 挂载、GPU 实时利用率、
   SSH 信息都只有 v2 提供。API key 用单独建的「限权 key」，存在 ~/.config/atlas-gpu/runpod_api_key，
   只在发请求时读进内存，绝不打印、不写日志。
@@ -40,7 +41,9 @@ LOG_FILE = Path(os.environ.get("ATLAS_GPU_LOG", HOME / "logs/gpu-guard.log"))
 SSH_KEY = Path(os.environ.get("ATLAS_GPU_SSH_KEY", HOME / ".ssh/atlas_runpod"))
 
 PREFIX = "atlas-"
-VOLUME_NAME = "atlas_data"
+# Global volume 只按 ID 识别（配置文件 global_volume_id），名字只用于显示——名字可能含斜杠、也不保证唯一
+VOLUME_LABEL_DEFAULT = "atlas_data"
+MIN_BALANCE = 15.0  # 余额低于这个数拒绝开 pod：余额归零 15 天后 Global volume 会被永久删除
 # Global volume 在 pod 里的挂载路径：创建 pod 时显式指定，并作为环境变量 ATLAS_VOL 传进 pod。
 # pod 上所有脚本只认 $ATLAS_VOL，不写死 /workspace（同时挂 network volume 时默认会变成 /workspace-global）。
 VOL_MOUNT = os.environ.get("ATLAS_VOL_MOUNT", "/workspace")
@@ -248,12 +251,40 @@ def pod_action(pod, action):
         ctl("pod", action, pod["id"], timeout=120)
 
 
-def find_global_volume():
+def volume_config():
+    """返回 (volume ID, 显示名)。没有配置 ID 时报错，不按名字猜。"""
     cfg = load_config()
-    want = cfg.get("global_volume_id")
-    for v in as_list(api("GET", "/v2/global-volumes"), "globalVolumes"):
-        if (want and v.get("id") == want) or (not want and v.get("name") == VOLUME_NAME):
-            return v
+    vid = str(cfg.get("global_volume_id") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{6,64}", vid):
+        raise GuardError(f"{CONFIG_FILE} 里没有有效的 global_volume_id")
+    return vid, cfg.get("global_volume_label") or VOLUME_LABEL_DEFAULT
+
+
+def find_global_volume():
+    """按配置里的 ID 通过 v2 API 确认 Global volume 存在。"""
+    vid, _ = volume_config()
+    try:
+        v = api("GET", f"/v2/global-volumes/{urllib.parse.quote(vid, safe='')}")
+    except GuardError as e:
+        if "HTTP 404" in str(e):
+            return None
+        raise
+    return v if isinstance(v, dict) and v.get("id") == vid else None
+
+
+def get_balance():
+    """账户余额（美元）。v2 API 没有余额接口，用 runpodctl user（它自己读 key）。读不到返回 None。"""
+    try:
+        u = ctl("user", timeout=30)
+    except GuardError:
+        return None
+    if isinstance(u, dict):
+        for k in ("clientBalance", "balance"):
+            if u.get(k) is not None:
+                try:
+                    return float(u[k])
+                except (TypeError, ValueError):
+                    pass
     return None
 
 
@@ -444,14 +475,29 @@ def cmd_up(a):
         raise GuardError(f"已有 {len(active)} 个 atlas- pod 在运行（上限 {MAX_PODS}）：" +
                          ", ".join(p["name"] for p in active) + "。先 gpu-down。")
 
+    # 余额检查：读不到也拒绝（宁可不开，也不能让余额归零导致 Global volume 被删）
+    balance = get_balance()
+    if balance is None:
+        msg = "读不到账户余额（runpodctl user 失败）"
+        if not a.dry_run:
+            raise GuardError(msg + "，拒绝开 pod")
+        print(f"[dry-run] {msg}，真开时会拒绝")
+    elif balance < MIN_BALANCE:
+        msg = f"账户余额 ${balance:.2f} < ${MIN_BALANCE:.0f}，请先充值（余额归零 15 天后 Global volume 会被删除）"
+        if not a.dry_run:
+            raise GuardError(msg)
+        print(f"[dry-run] {msg}，真开时会拒绝")
+
+    vol_id, vol_label = volume_config()
     if have_api_key():
         vol = find_global_volume()
         if not vol:
-            raise GuardError(f"找不到 Global volume '{VOLUME_NAME}'（或 config 里的 global_volume_id）")
-        vol_id = vol["id"]
+            raise GuardError(f"v2 API 找不到 Global volume {vol_id}（{vol_label}）")
+        vol_label = vol.get("name") or vol_label
+        vol_src = "v2 API 已确认"
     else:
-        vol_id = "<GLOBAL_VOLUME_ID>"
-        print("[dry-run] 没有 API key：库存来自 runpodctl，Global volume ID 用占位符")
+        vol_src = "未经 API 确认（没有 API key）"
+        print("[dry-run] 没有 API key：库存来自 runpodctl，Global volume 未经 API 确认")
 
     # 不管要哪种卡都要查 A100 库存：A100 有货时不允许 H100
     avail = gpu_availability(list(dict.fromkeys(A100_IDS + GPU_ALIASES.get(a.gpu, []))))
@@ -477,12 +523,16 @@ def cmd_up(a):
     deadline = now() + dt.timedelta(hours=a.hours)
     print(f"名字     : {name}")
     print("GPU 顺序 : " + " → ".join(f"{g}（{avail[g][0]}，{len(avail[g][2])} 个区域）" for g in order))
-    print(f"Volume   : Global {VOLUME_NAME} → {VOL_MOUNT}（pod 内变量 $ATLAS_VOL）")
+    print(f"Volume   : Global「{vol_label}」{vol_id}（{vol_src}）→ {VOL_MOUNT}（pod 内变量 $ATLAS_VOL）")
     print(f"容器盘   : {a.disk} GB（$ATLAS_LOCAL={LOCAL_ROOT}，stop 后清空）")
     print(f"镜像     : {a.image}")
     print(f"时长上限 : {a.hours:g} h（到 {iso(deadline)} 自动 stop）")
     p0 = price_of(order[0])
     print(f"估算花费 : ${p0:.2f}/h × {a.hours:g} h ≈ ${p0 * a.hours:.2f}（上限，不含容器盘和 Volume 存储）" if p0 else "估算花费 : 价格未知")
+    if balance is not None:
+        print(f"账户余额 : ${balance:.2f}（下限 ${MIN_BALANCE:.0f}）")
+        if p0 and balance - p0 * a.hours < MIN_BALANCE:
+            print(f"  ⚠️ 跑满 {a.hours:g} h 后余额会低于 ${MIN_BALANCE:.0f}，建议再充值")
     if a.dry_run:
         shown = body_for(order[0])
         shown["env"] = {**env, "PUBLIC_KEY": f"<{len(pubkeys.splitlines())} 个公钥>"} if pubkeys else env
@@ -581,6 +631,9 @@ def cmd_status(a):
             if ssh_human(p):
                 print(f"    ssh: {ssh_human(p)}")
     print(f"本次运行累计估算: ${total:.2f}（只算运行中的 pod，$/h × 本次运行时长；数据来源 {src}）")
+    bal = get_balance()
+    if bal is not None:
+        print(f"账户余额: ${bal:.2f}" + (f"  ⚠️ 低于 ${MIN_BALANCE:.0f}，请充值" if bal < MIN_BALANCE else ""))
     return 0
 
 
