@@ -14,7 +14,7 @@ ERA MOMENT 做活动摄影摄像。美国 8 小时活动摄像师报价很少低
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | 0 | 仓库初始化 | ✅ |
-| 1 | GPU 成本护栏（开/关/巡检 RunPod pod） | ⏳ |
+| 1 | GPU 成本护栏（开/关/巡检 RunPod pod），见 [guard/](guard/README.md) | ✅ |
 | 2 | pod 环境脚本（GEN3C / ViPE / 4C4D） | ⏳ |
 | 3 | CMU Panoptic 数据准备 | ⏳ |
 | 4 | GEN3C vs 4C4D 基线对比（效果 / 耗时 / 成本） | ⏳ |
@@ -35,7 +35,8 @@ ERA MOMENT 做活动摄影摄像。美国 8 小时活动摄像师报价很少低
 .
 ├── README.md       项目说明
 ├── PROGRESS.md     每阶段进度记录
-└── CLAUDE.md       项目简报 / 工作约定
+├── CLAUDE.md       项目简报 / 工作约定
+└── guard/          GPU 护栏：gpu-up / gpu-down / gpu-status / gpu-guard + 离线测试
 ```
 
 ## 第三方模型与数据许可

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# 假的 runpodctl：从 $FAKE_DIR 读 JSON，记录所有调用到 $FAKE_DIR/calls.log。只用于离线测试。
+set -e
+echo "$*" >> "$FAKE_DIR/calls.log"
+case "$1 $2" in
+  "pod list")              cat "$FAKE_DIR/pods.json" ;;
+  "network-volume list")   cat "$FAKE_DIR/nv.json" ;;
+  "datacenter list")       cat "$FAKE_DIR/dc.json" ;;
+  "gpu list")              cat "$FAKE_DIR/gpu.json" ;;
+  "pod create")            echo '{"id":"fakepod123","name":"atlas-test","desiredStatus":"RUNNING"}' ;;
+  "pod stop"|"pod delete") echo '{"ok":true}' ;;
+  "ssh info")              echo '{"sshCommand":"ssh root@pod.example.invalid -p 22022 -i /dev/null"}' ;;
+  *) echo "fake: 未实现 $*" >&2; exit 1 ;;
+esac
