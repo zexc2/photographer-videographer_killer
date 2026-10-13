@@ -1,129 +1,168 @@
 #!/usr/bin/env bash
-# GPU 护栏离线测试：用假的 runpodctl / ssh，不会碰真实 RunPod 账号。
+# GPU 护栏离线测试：假的 RunPod API v2 + 假的 runpodctl / ssh，不会碰真实账号。
 # 用法: guard/tests/run_tests.sh
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 G="python3 $HERE/../atlas_gpu.py"
 PASS=0; FAIL=0
 export FAKE_DIR=$(mktemp -d)
-trap 'rm -rf "$FAKE_DIR"' EXIT
-export RUNPODCTL="$HERE/fake_runpodctl"
-export ATLAS_GPU_SSH="$HERE/fake_ssh"
+PORT=$((20000 + RANDOM % 20000))
+python3 "$HERE/fake_api.py" $PORT & API_PID=$!
+trap 'kill $API_PID 2>/dev/null; rm -rf "$FAKE_DIR"' EXIT
+export ATLAS_RUNPOD_API="http://127.0.0.1:$PORT"
+export RUNPODCTL="$HERE/fake_runpodctl" ATLAS_GPU_SSH="$HERE/fake_ssh"
 export ATLAS_GPU_STATE="$FAKE_DIR/state" ATLAS_GPU_LOG="$FAKE_DIR/guard.log" ATLAS_GPU_CONFIG="$FAKE_DIR/none.json"
+export ATLAS_GPU_KEYFILE="$FAKE_DIR/key" ATLAS_GPU_SSH_KEY="$FAKE_DIR/sshkey"
+for i in $(seq 50); do curl -s -o /dev/null "$ATLAS_RUNPOD_API/" && break; sleep 0.1; done
 
 ago() { date -u -d "-$1 minutes" +%Y-%m-%dT%H:%M:%SZ; }
+key_on()  { printf 'testkey\n' > "$FAKE_DIR/key"; chmod 600 "$FAKE_DIR/key"; }
+key_off() { rm -f "$FAKE_DIR/key"; }
 reset() {
-  rm -rf "$FAKE_DIR"/{state,calls.log,guard.log,util,busy}
-  echo '[]' > "$FAKE_DIR/pods.json"
-  echo '[{"id":"vol1","name":"atlas_data","size":150,"dataCenterId":"US-KS-2"}]' > "$FAKE_DIR/nv.json"
-  dc '"Low"' '"Low"'
-  echo '[{"gpuId":"NVIDIA A100-SXM4-80GB","securePricePerHr":1.79},{"gpuId":"NVIDIA H100 80GB HBM3","securePricePerHr":3.99}]' > "$FAKE_DIR/gpu.json"
+  rm -rf "$FAKE_DIR"/{state,calls.log,guard.log,util,busy,api_fail,create_fail,api_created.json}
+  key_on; touch "$FAKE_DIR/sshkey"; echo 'ssh-ed25519 AAAAtest atlas' > "$FAKE_DIR/sshkey.pub"
+  echo '[]' > "$FAKE_DIR/api_pods.json"; echo '[]' > "$FAKE_DIR/pods.json"
+  echo '[{"id":"gsb_test","name":"atlas_data"}]' > "$FAKE_DIR/api_gv.json"
+  cat > "$FAKE_DIR/api_catalog.json" <<J
+{"NVIDIA A100-SXM4-80GB":{"availability":"LOW","price":1.79},"NVIDIA A100 80GB PCIe":{"availability":"NONE","price":1.64},
+ "NVIDIA H100 80GB HBM3":{"availability":"LOW","price":3.99},"NVIDIA H100 PCIe":{"availability":"NONE","price":2.89},
+ "NVIDIA H100 NVL":{"availability":"NONE","price":3.29}}
+J
+  # runpodctl 兜底用的数据
+  echo '[{"id":"US-KS-2","gpuAvailability":[{"gpuId":"NVIDIA A100-SXM4-80GB","stockStatus":"Low"}]}]' > "$FAKE_DIR/dc.json"
+  echo '[{"gpuId":"NVIDIA A100-SXM4-80GB","securePricePerHr":1.79}]' > "$FAKE_DIR/gpu.json"
+  echo '{"keys":[{"key":"ssh-ed25519 AAAAjoey joey"}]}' > "$FAKE_DIR/keys.json"
 }
-dc() {  # $1=A100 SXM 库存, $2=H100 SXM 库存
-  echo "[{\"id\":\"US-KS-2\",\"gpuAvailability\":[{\"gpuId\":\"NVIDIA A100-SXM4-80GB\",\"stockStatus\":$1},{\"gpuId\":\"NVIDIA A100 80GB PCIe\",\"stockStatus\":null},{\"gpuId\":\"NVIDIA H100 80GB HBM3\",\"stockStatus\":$2},{\"gpuId\":\"NVIDIA GeForce RTX 4090\",\"stockStatus\":\"High\"}]}]" > "$FAKE_DIR/dc.json"
-}
-pods() { echo "$1" > "$FAKE_DIR/pods.json"; }
+avail() { python3 -c "import json,sys;p=sys.argv[1];d=json.load(open(p));d[sys.argv[2]]['availability']=sys.argv[3];json.dump(d,open(p,'w'))" "$FAKE_DIR/api_catalog.json" "$1" "$2"; }
+apipods() { echo "$1" > "$FAKE_DIR/api_pods.json"; }
+ctlpods() { echo "$1" > "$FAKE_DIR/pods.json"; }
 state() { mkdir -p "$FAKE_DIR/state"; echo "$2" > "$FAKE_DIR/state/$1.json"; }
+pod() {  # pod id name status 开机分钟前 [util]
+  local u=${5:-null}; [ "$u" = null ] && rt=null || rt="{\"gpus\":[{\"util\":$u}]}"
+  echo "{\"id\":\"$1\",\"name\":\"$2\",\"status\":\"$3\",\"startedAt\":\"$(ago $4)\",\"cost\":1.79,\"gpu\":{\"id\":\"NVIDIA A100-SXM4-80GB\"},\"runtime\":$rt,\"ssh\":{\"direct\":{\"command\":\"ssh root@pod.example.invalid -p 1\"}}}"
+}
 check() {  # check 描述 期望(0/1) 命令...
   local desc=$1 want=$2; shift 2
   if eval "$@" >/dev/null 2>&1; then got=0; else got=1; fi
   if [ "$got" = "$want" ]; then PASS=$((PASS+1)); echo "  ✓ $desc"; else FAIL=$((FAIL+1)); echo "  ✗ $desc"; fi
 }
 called() { grep -q -- "$1" "$FAKE_DIR/calls.log" 2>/dev/null; }
-
-OTHER='{"id":"other1","name":"eramoment_find_attendee_tool","desiredStatus":"RUNNING","costPerHr":0.5}'
+OTHER=$(pod other1 eramoment_find_attendee_tool RUNNING 600 0)
 
 echo "== gpu-up"
 reset
-check "dry-run 默认参数可以通过"            0 "$G up --dry-run"
-check "dry-run 不会真的 create"             1 "called 'pod create'"
-check "选中 A100 SXM 并挂 Volume"           0 "$G up --dry-run | grep -q 'NVIDIA A100-SXM4-80GB' && $G up --dry-run | grep -q -- '--network-volume-id vol1'"
-check "--hours 7 被拒绝"                    1 "$G up --dry-run --hours 7"
-check "--hours 0 被拒绝"                    1 "$G up --dry-run --hours 0"
-check "--gpu rtx4090 被拒绝"                1 "$G up --dry-run --gpu rtx4090"
-check "A100 有货时 --gpu h100 被拒绝"       1 "$G up --dry-run --gpu h100"
-dc 'null' '"Low"'
-check "A100 无货时 auto 回退到 H100"        0 "$G up --dry-run | grep -q 'H100 80GB HBM3'"
-check "A100 无货时 --gpu a100 报错"         1 "$G up --dry-run --gpu a100"
-dc 'null' 'null'
-check "全部无货时报错"                       1 "$G up --dry-run"
+check "dry-run 默认参数可以通过"                 0 "$G up --dry-run"
+check "dry-run 不会真的创建"                     1 "called 'API POST /v2/pods '"
+check "选 A100 SXM、挂 Global volume、不锁区域"  0 "$G up --dry-run | grep -q 'gsb_test' && $G up --dry-run | grep -q '\"path\": \"/workspace\"' && ! $G up --dry-run | grep -q dataCenterIds"
+check "挂载路径来自 ATLAS_VOL_MOUNT 变量"         0 "ATLAS_VOL_MOUNT=/workspace-global $G up --dry-run | grep -q '\"ATLAS_VOL\": \"/workspace-global\"'"
+check "容器盘默认 200GB"                          0 "$G up --dry-run | grep -q '\"disk\": 200'"
+check "--hours 7 被拒绝"                         1 "$G up --dry-run --hours 7"
+check "--hours 0 被拒绝"                         1 "$G up --dry-run --hours 0"
+check "--gpu rtx4090 被拒绝"                     1 "$G up --dry-run --gpu rtx4090"
+check "A100 有货时 --gpu h100 被拒绝"            1 "$G up --dry-run --gpu h100"
+avail "NVIDIA A100-SXM4-80GB" NONE
+check "A100 全区域无货时 auto 回退到 H100"       0 "$G up --dry-run | grep -q '\"id\": \"NVIDIA H100 80GB HBM3\"'"
+check "A100 无货时 --gpu a100 报错"              1 "$G up --dry-run --gpu a100"
+avail "NVIDIA H100 80GB HBM3" NONE
+check "全部无货时报错"                            1 "$G up --dry-run"
 reset
-check "名字强制 atlas- 前缀"                0 "$G up --dry-run --name gen3c | grep -q 'atlas-gen3c'"
-check "非法名字被拒绝"                       1 "$G up --dry-run --name 'a b;rm'"
-pods "[{\"id\":\"p1\",\"name\":\"atlas-x\",\"desiredStatus\":\"RUNNING\"},$OTHER]"
-check "已有 1 个 atlas- pod 运行时拒绝"      1 "$G up --dry-run"
-pods "[$OTHER]"
-check "别的项目的 pod 不占名额"              0 "$G up --dry-run"
-echo '[]' > "$FAKE_DIR/nv.json"
-check "没有 Volume 时真开 pod 被拒绝"        1 "$G up"
-check "没有 Volume 时 dry-run 仍可预览"      0 "$G up --dry-run"
+check "名字强制 atlas- 前缀"                     0 "$G up --dry-run --name gen3c | grep -q 'atlas-gen3c'"
+check "非法名字被拒绝"                            1 "$G up --dry-run --name 'a b;rm'"
+apipods "[$(pod p1 atlas-x RUNNING 10 50),$OTHER]"
+check "已有 1 个 atlas- pod 运行时拒绝"           1 "$G up --dry-run"
+apipods "[$(pod p1 atlas-x PROVISIONING 1),$OTHER]"
+check "PROVISIONING 的 pod 也占名额"             1 "$G up --dry-run"
+apipods "[$OTHER]"
+check "别的项目的 pod 不占名额"                   0 "$G up --dry-run"
+echo '[]' > "$FAKE_DIR/api_gv.json"
+check "找不到 Global volume 时拒绝"              1 "$G up"
+reset; key_off
+check "没有 API key 时真开 pod 被拒绝"           1 "$G up"
+check "没有 API key 时 dry-run 用 runpodctl 预览" 0 "$G up --dry-run | grep -q GLOBAL_VOLUME_ID"
+reset; chmod 644 "$FAKE_DIR/key"
+check "key 文件权限过宽时拒绝"                    1 "$G up"
 reset
-check "真开（假 runpodctl）成功并输出 SSH"   0 "$G up --hours 2 --wait 0.1 | grep -q 'SSH      : .*fake_ssh'"
-check "开完写入状态文件"                     0 "test -f $FAKE_DIR/state/fakepod123.json"
+check "真开（假 API）成功并输出 SSH"              0 "$G up --hours 2 --wait 0 | grep -q 'SSH      : ssh root@pod.example.invalid'"
+check "开完写入状态文件"                          0 "test -f $FAKE_DIR/state/fakepod123.json"
+check "PUBLIC_KEY 含服务器 key 和账户 key"        0 "grep 'API POST /v2/pods ' $FAKE_DIR/calls.log | grep -q 'AAAAtest' && grep 'API POST /v2/pods ' $FAKE_DIR/calls.log | grep -q 'AAAAjoey'"
+reset; echo 'NVIDIA A100-SXM4-80GB' > "$FAKE_DIR/create_fail"
+check "A100 抢不到卡时自动改开 H100"              0 "$G up --wait 0 && grep 'API POST /v2/pods ' $FAKE_DIR/calls.log | tail -1 | grep -q 'H100 80GB HBM3'"
 
 echo "== gpu-down"
 reset
-pods "[{\"id\":\"p1\",\"name\":\"atlas-x\",\"desiredStatus\":\"RUNNING\"},$OTHER]"
-check "拒绝 stop 非 atlas- pod（按名字）"    1 "$G down eramoment_find_attendee_tool"
-check "拒绝 stop 非 atlas- pod（按 ID）"     1 "$G down other1"
-check "没有调用 stop other1"                 1 "called 'pod stop other1'"
-check "可以 stop atlas- pod"                 0 "$G down atlas-x && called 'pod stop p1'"
-check "--all --delete 只删 atlas-"           0 "$G down --all --delete && called 'pod delete p1' && ! called 'other1'"
+apipods "[$(pod p1 atlas-x RUNNING 10 50),$OTHER]"
+check "拒绝 stop 非 atlas- pod（按名字）"         1 "$G down eramoment_find_attendee_tool"
+check "拒绝 stop 非 atlas- pod（按 ID）"          1 "$G down other1"
+check "没有对 other1 发过任何写操作"              1 "grep -E 'POST|DELETE' $FAKE_DIR/calls.log | grep -q other1"
+check "可以 stop atlas- pod（走 API）"            0 "$G down atlas-x && called 'API POST /v2/pods/p1/action {\"action\": \"stop\"}'"
+check "--all --delete 只删 atlas-"                0 "$G down --all --delete && called 'API DELETE /v2/pods/p1' && ! grep -E 'POST|DELETE' $FAKE_DIR/calls.log | grep -q other1"
+reset; touch "$FAKE_DIR/api_fail"
+ctlpods '[{"id":"p1","name":"atlas-x","desiredStatus":"RUNNING"},{"id":"other1","name":"eramoment_find_attendee_tool","desiredStatus":"RUNNING"}]'
+check "API 故障时退回 runpodctl stop"             0 "$G down atlas-x && called 'pod stop p1'"
 
 echo "== gpu-status"
 reset
-pods "[{\"id\":\"p1\",\"name\":\"atlas-x\",\"desiredStatus\":\"RUNNING\",\"costPerHr\":1.79,\"lastStartedAt\":\"$(ago 90)\"},$OTHER]"
-state p1 "{\"max_hours\":6,\"gpu\":\"NVIDIA A100-SXM4-80GB\"}"
-check "显示 atlas- pod、不显示别的项目"       0 "$G status | grep -q atlas-x && ! $G status | grep -q eramoment"
-check "时长 / 花费 / 剩余时间正确"           0 "$G status | grep -q '1h30m' && $G status | grep -q '\$2.6' && $G status | grep -qE '4h(29|30)m'"
+apipods "[$(pod p1 atlas-x RUNNING 90 42),$OTHER]"
+state p1 '{"max_hours":6}'
+check "显示 atlas- pod、不显示别的项目"            0 "$G status | grep -q atlas-x && ! $G status | grep -q eramoment"
+check "时长 / 花费 / 剩余 / 利用率正确"           0 "$G status | grep -q '1h30m' && $G status | grep -q '\$2.6' && $G status | grep -qE '4h(29|30)m' && $G status | grep -q ' 42 '"
 
 echo "== gpu-guard"
 reset
-pods "[{\"id\":\"p1\",\"name\":\"atlas-x\",\"desiredStatus\":\"RUNNING\",\"lastStartedAt\":\"$(ago 370)\"},$OTHER]"
+apipods "[$(pod p1 atlas-x RUNNING 370 80),$OTHER]"
 state p1 '{"max_hours":6}'
-check "超过 6h → stop"                       0 "$G guard && called 'pod stop p1'"
-check "绝不 stop 别的项目"                   1 "called other1"
+check "超过 6h → stop（即使 GPU 在忙）"           0 "$G guard && called 'API POST /v2/pods/p1/action'"
+check "绝不 stop 别的项目"                         1 "grep -E 'POST|DELETE' $FAKE_DIR/calls.log | grep -q other1"
+check "stop 前执行了 pre_stop 同步"               0 "grep -q 'PRE_STOP p1' $FAKE_DIR/guard.log"
 reset
-pods "[{\"id\":\"p1\",\"name\":\"atlas-x\",\"desiredStatus\":\"RUNNING\",\"lastStartedAt\":\"$(ago 100)\"}]"
+apipods "[$(pod p1 atlas-x RUNNING 100 80)]"
 state p1 '{"max_hours":1.5}'
-check "超过自定义 1.5h → stop"               0 "$G guard && called 'pod stop p1'"
+check "超过自定义 1.5h → stop"                     0 "$G guard && called 'API POST /v2/pods/p1/action'"
 reset
-pods "[{\"id\":\"p1\",\"name\":\"atlas-x\",\"desiredStatus\":\"RUNNING\",\"lastStartedAt\":\"$(ago 60)\"}]"
+apipods "[$(pod p1 atlas-x RUNNING 60 0)]"
 state p1 '{"max_hours":6,"idle_since":null}'
 echo 0 > "$FAKE_DIR/util"
-check "第一次 util=0 → 只开始计时"           0 "$G guard && ! called 'pod stop'"
+check "第一次 util=0 → 只开始计时"                 0 "$G guard && ! called '/action'"
 state p1 "{\"max_hours\":6,\"idle_since\":\"$(ago 20)\"}"
-check "空闲 20 分钟 → 不 stop"               0 "$G guard && ! called 'pod stop'"
+check "空闲 20 分钟 → 不 stop"                     0 "$G guard && ! called '/action'"
 state p1 "{\"max_hours\":6,\"idle_since\":\"$(ago 30)\"}"
-check "空闲 30 分钟 → stop"                  0 "$G guard && called 'pod stop p1'"
+check "空闲 30 分钟 → stop"                        0 "$G guard && called 'API POST /v2/pods/p1/action'"
 reset
-pods "[{\"id\":\"p1\",\"name\":\"atlas-x\",\"desiredStatus\":\"RUNNING\",\"lastStartedAt\":\"$(ago 60)\"}]"
+apipods "[$(pod p1 atlas-x RUNNING 60 37)]"
 state p1 "{\"max_hours\":6,\"idle_since\":\"$(ago 40)\"}"
-echo 37 > "$FAKE_DIR/util"
-check "util>0 → 清空空闲计时、不 stop"        0 "$G guard && ! called 'pod stop' && grep -q '\"idle_since\": null' $FAKE_DIR/state/p1.json"
+echo FAIL > "$FAKE_DIR/util"
+check "API util>0 → 不需要 SSH，清空空闲计时"     0 "$G guard && ! called '/action' && grep -q '\"idle_since\": null' $FAKE_DIR/state/p1.json"
+reset
+apipods "[$(pod p1 atlas-x RUNNING 60 0)]"
+state p1 "{\"max_hours\":6,\"idle_since\":\"$(ago 40)\"}"
+echo 55 > "$FAKE_DIR/util"
+check "API 说 0 但 nvidia-smi 复核 >0 → 不 stop"   0 "$G guard && ! called '/action'"
 echo 0 > "$FAKE_DIR/util"; echo 60 > "$FAKE_DIR/busy"
 state p1 "{\"max_hours\":6,\"idle_since\":\"$(ago 40)\"}"
-check "util=0 但 busy 标记新鲜 → 不 stop"    0 "$G guard && ! called 'pod stop'"
+check "util=0 但 busy 标记新鲜 → 不 stop"         0 "$G guard && ! called '/action'"
 echo 3600 > "$FAKE_DIR/busy"
 state p1 "{\"max_hours\":6,\"idle_since\":\"$(ago 40)\"}"
-check "busy 标记过期 → stop"                 0 "$G guard && called 'pod stop p1'"
+check "busy 标记过期 → stop"                       0 "$G guard && called 'API POST /v2/pods/p1/action'"
 reset
-pods "[{\"id\":\"p1\",\"name\":\"atlas-x\",\"desiredStatus\":\"RUNNING\",\"lastStartedAt\":\"$(ago 10)\"}]"
+apipods "[$(pod p1 atlas-x RUNNING 10)]"
 state p1 '{"max_hours":6}'
 echo FAIL > "$FAKE_DIR/util"
-check "开机 10 分钟 SSH 不通 → 宽限、不 stop" 0 "$G guard && ! called 'pod stop'"
-pods "[{\"id\":\"p1\",\"name\":\"atlas-x\",\"desiredStatus\":\"RUNNING\",\"lastStartedAt\":\"$(ago 90)\"}]"
+check "开机 10 分钟没有利用率、SSH 不通 → 宽限"   0 "$G guard && ! called '/action'"
+apipods "[$(pod p1 atlas-x RUNNING 90)]"
 state p1 "{\"max_hours\":6,\"idle_since\":\"$(ago 30)\"}"
-check "开机后 SSH 持续 30 分钟不通 → stop"   0 "$G guard && called 'pod stop p1'"
+check "开机后持续 30 分钟探测不到 → stop"         0 "$G guard && called 'API POST /v2/pods/p1/action'"
 reset
-pods "[{\"id\":\"p9\",\"name\":\"atlas-manual\",\"desiredStatus\":\"RUNNING\",\"lastStartedAt\":\"$(ago 400)\"}]"
-check "没走 gpu-up 的 atlas- pod 也按 6h 管" 0 "$G guard && called 'pod stop p9'"
+apipods "[$(pod p9 atlas-manual RUNNING 400 90)]"
+check "没走 gpu-up 的 atlas- pod 也按 6h 管"      0 "$G guard && called 'API POST /v2/pods/p9/action'"
 reset
-pods "[{\"id\":\"p1\",\"name\":\"atlas-x\",\"desiredStatus\":\"RUNNING\",\"lastStartedAt\":\"$(ago 400)\"}]"
-check "guard --dry-run 不真 stop"            0 "$G guard --dry-run && ! called 'pod stop' && grep -q dry-run $FAKE_DIR/guard.log"
+apipods "[$(pod p1 atlas-x RUNNING 400 90)]"
+check "guard --dry-run 不真 stop"                  0 "$G guard --dry-run && ! called '/action' && grep -q dry-run $FAKE_DIR/guard.log"
 reset
-pods "[{\"id\":\"p1\",\"name\":\"atlas-x\",\"desiredStatus\":\"EXITED\",\"lastStartedAt\":\"$(ago 400)\"}]"
-check "已停止的 pod 不重复 stop"              0 "$G guard && ! called 'pod stop'"
+apipods "[$(pod p1 atlas-x EXITED 400)]"
+check "已停止的 pod 不重复 stop"                   0 "$G guard && ! called '/action'"
+reset; touch "$FAKE_DIR/api_fail"
+ctlpods "[{\"id\":\"p1\",\"name\":\"atlas-x\",\"desiredStatus\":\"RUNNING\",\"lastStartedAt\":\"$(ago 400)\"},{\"id\":\"other1\",\"name\":\"eramoment_find_attendee_tool\",\"desiredStatus\":\"RUNNING\",\"lastStartedAt\":\"$(ago 999)\"}]"
+check "API 故障时巡检退回 runpodctl，超时照样 stop" 0 "$G guard && called 'pod stop p1' && ! called 'pod stop other1'"
 
 echo
 echo "通过 $PASS，失败 $FAIL"

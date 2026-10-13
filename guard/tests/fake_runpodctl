@@ -9,6 +9,6 @@ case "$1 $2" in
   "gpu list")              cat "$FAKE_DIR/gpu.json" ;;
   "pod create")            echo '{"id":"fakepod123","name":"atlas-test","desiredStatus":"RUNNING"}' ;;
   "pod stop"|"pod delete") echo '{"ok":true}' ;;
-  "ssh info")              echo '{"sshCommand":"ssh root@pod.example.invalid -p 22022 -i /dev/null"}' ;;
+  "ssh list-keys")         cat "$FAKE_DIR/keys.json" ;;
   *) echo "fake: 未实现 $*" >&2; exit 1 ;;
 esac

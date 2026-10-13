@@ -27,7 +27,9 @@ ERA MOMENT 做活动摄影摄像。美国 8 小时活动摄像师报价很少低
 
 - **调度服务器**（2 核 4G）：只跑前端、调度脚本、存小文件，不跑任何模型。
 - **RunPod GPU pod**（A100 80GB，必要时 H100）：所有 3D 重建、训练、视频生成。
-- **RunPod Network Volume**（挂载在 `/workspace`）：数据集、模型权重、conda 环境、训练产出。
+- **RunPod Global volume**（不绑机房，pod 内路径 `$ATLAS_VOL`）：只存冷数据，包括模型权重、原始数据集、环境打包文件、最终结果。
+- **pod 容器盘**（`$ATLAS_LOCAL`，200 GB，stop 后清空）：conda 环境、工作目录、中间文件、checkpoint。
+- 详见 [docs/storage-and-env.md](docs/storage-and-env.md)。
 
 ## 目录结构（随阶段补充）
 
@@ -36,6 +38,7 @@ ERA MOMENT 做活动摄影摄像。美国 8 小时活动摄像师报价很少低
 ├── README.md       项目说明
 ├── PROGRESS.md     每阶段进度记录
 ├── CLAUDE.md       项目简报 / 工作约定
+├── docs/           设计与决策文档
 └── guard/          GPU 护栏：gpu-up / gpu-down / gpu-status / gpu-guard + 离线测试
 ```
 

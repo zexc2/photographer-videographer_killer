@@ -2,15 +2,19 @@
 """ATLAS GPU 护栏：所有 RunPod pod 的开 / 关 / 状态 / 巡检都走这里。
 
 入口（~/bin 下的软链接）：
-  gpu-up      开 pod（白名单 GPU、atlas- 前缀、最多 1 个、挂 atlas_data、限时）
+  gpu-up      开 pod（白名单 GPU、atlas- 前缀、最多 1 个、挂 Global volume atlas_data、限时）
   gpu-down    stop / delete atlas- 前缀的 pod
   gpu-status  列出 atlas- pod、已运行时长、估算花费、距自动关机时间
   gpu-guard   巡检（cron 每 10 分钟）：超时 → stop；GPU 连续 30 分钟空闲 → stop
 
-设计要点
-- 只调用 runpodctl（它自己读 ~/.runpod 里的 key），本脚本从不读取 key。
-- 运行状态（pod ID、到期时间、空闲计时）存在 ~/.local/state/atlas-gpu/，不在仓库里。
-- 环境变量 RUNPODCTL / ATLAS_GPU_SSH 可替换成假的命令，用于离线测试（见 guard/tests）。
+后端
+- 主路径：RunPod REST API v2（https://api.runpod.io/v2）。Global volume 挂载、GPU 实时利用率、
+  SSH 信息都只有 v2 提供。API key 用单独建的「限权 key」，存在 ~/.config/atlas-gpu/runpod_api_key，
+  只在发请求时读进内存，绝不打印、不写日志。
+- 兜底：API 不可用时，巡检退回 runpodctl（它自己读 ~/.runpod，本脚本不碰），只做列表 + 超时 stop。
+
+运行状态（pod ID、到期时间、空闲计时）存在 ~/.local/state/atlas-gpu/，不在仓库里。
+测试用环境变量：ATLAS_RUNPOD_API（假 API 地址）、RUNPODCTL、ATLAS_GPU_SSH、ATLAS_GPU_* 路径。
 """
 import argparse
 import datetime as dt
@@ -21,28 +25,41 @@ import shlex
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 HOME = Path.home()
+API_BASE = os.environ.get("ATLAS_RUNPOD_API", "https://api.runpod.io").rstrip("/")
+API_KEY_FILE = Path(os.environ.get("ATLAS_GPU_KEYFILE", HOME / ".config/atlas-gpu/runpod_api_key"))
 RUNPODCTL = os.environ.get("RUNPODCTL", str(HOME / ".local/bin/runpodctl"))
 STATE_DIR = Path(os.environ.get("ATLAS_GPU_STATE", HOME / ".local/state/atlas-gpu"))
 CONFIG_FILE = Path(os.environ.get("ATLAS_GPU_CONFIG", HOME / ".config/atlas-gpu/config.json"))
 LOG_FILE = Path(os.environ.get("ATLAS_GPU_LOG", HOME / "logs/gpu-guard.log"))
+SSH_KEY = Path(os.environ.get("ATLAS_GPU_SSH_KEY", HOME / ".ssh/atlas_runpod"))
 
 PREFIX = "atlas-"
 VOLUME_NAME = "atlas_data"
-MOUNT_PATH = "/workspace"
+# Global volume 在 pod 里的挂载路径：创建 pod 时显式指定，并作为环境变量 ATLAS_VOL 传进 pod。
+# pod 上所有脚本只认 $ATLAS_VOL，不写死 /workspace（同时挂 network volume 时默认会变成 /workspace-global）。
+VOL_MOUNT = os.environ.get("ATLAS_VOL_MOUNT", "/workspace")
+# 容器盘（本地 NVMe，pod stop 后清空）：conda 环境、工作目录、中间文件、checkpoint
+LOCAL_ROOT = "/opt/atlas"
+BUSY_MARKER = f"{LOCAL_ROOT}/.atlas_busy"   # 任务执行器定期 touch；新鲜时 GPU 为 0 也不算空闲
+PRE_STOP = f"{LOCAL_ROOT}/bin/pre_stop"    # stop 前尽力执行一次：把要保留的结果同步回 $ATLAS_VOL
+PRE_STOP_TIMEOUT = 600
+BUSY_FRESH_MINUTES = 15
+
 MAX_PODS = 1
 DEFAULT_HOURS = 6.0
 MAX_HOURS = 6.0
 IDLE_MINUTES = 30
-# pod 上的任务执行器会定期 touch 这个文件；下载 / 安装 / CPU 预处理期间 GPU 为 0 也不算空闲
-BUSY_MARKER = "/workspace/.atlas_busy"
-BUSY_FRESH_MINUTES = 15
 DEFAULT_IMAGE = "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
-DEFAULT_CONTAINER_DISK_GB = 50
+MIN_CUDA = "12.8"  # 上面镜像是 cu128，主机驱动至少要支持 12.8
+DEFAULT_CONTAINER_DISK_GB = 200
 
-# 白名单：优先 A100 80GB，两种 A100 都没货时才允许 H100
+# 白名单：优先 A100 80GB，两种 A100 在所有区域都没货（或都开不出来）时才允许 H100
 A100_IDS = ["NVIDIA A100-SXM4-80GB", "NVIDIA A100 80GB PCIe"]
 H100_IDS = ["NVIDIA H100 80GB HBM3", "NVIDIA H100 PCIe", "NVIDIA H100 NVL"]
 GPU_ALIASES = {
@@ -55,14 +72,17 @@ GPU_ALIASES = {
     "h100-pcie": ["NVIDIA H100 PCIe"],
     "h100-nvl": ["NVIDIA H100 NVL"],
 }
-# gpu list 拿不到价格时的兜底估价（$/h，Secure Cloud，2026-10 查询）
 FALLBACK_PRICE = {"NVIDIA A100-SXM4-80GB": 1.79, "NVIDIA A100 80GB PCIe": 1.64,
                   "NVIDIA H100 80GB HBM3": 3.99, "NVIDIA H100 PCIe": 2.89, "NVIDIA H100 NVL": 3.29}
-IN_STOCK = {"low", "medium", "high"}
+ACTIVE = {"PROVISIONING", "STARTING", "RUNNING"}  # 这些状态都在计费
 
 
 # ---------------------------------------------------------------- 工具函数
 class GuardError(Exception):
+    pass
+
+
+class NoApiKey(GuardError):
     pass
 
 
@@ -96,48 +116,192 @@ def log(msg, also_print=True):
         print(line)
 
 
-def rp(*args, timeout=60):
-    """调用 runpodctl，返回解析后的 JSON。"""
-    cmd = [RUNPODCTL, *args]
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        raise GuardError(f"runpodctl {' '.join(args[:2])} 超时")
-    if r.returncode != 0:
-        raise GuardError(f"runpodctl {' '.join(args[:2])} 失败: {(r.stderr or r.stdout).strip()[:300]}")
-    out = r.stdout.strip()
-    if not out:
-        return None
-    try:
-        return json.loads(out)
-    except json.JSONDecodeError:
-        return out
-
-
-def as_list(x):
-    if x is None:
-        return []
-    if isinstance(x, dict):
-        for k in ("pods", "items", "data"):
-            if isinstance(x.get(k), list):
-                return x[k]
-        return [x]
-    return x if isinstance(x, list) else []
-
-
-def is_atlas(pod):
-    return str(pod.get("name") or "").startswith(PREFIX)
-
-
-def pod_running(pod):
-    return str(pod.get("desiredStatus") or "").upper() == "RUNNING"
-
-
 def fmt_dur(sec):
     if sec is None:
         return "?"
     sec = int(max(sec, 0))
     return f"{sec // 3600}h{(sec % 3600) // 60:02d}m"
+
+
+def load_config():
+    if CONFIG_FILE.exists():
+        return json.loads(CONFIG_FILE.read_text())
+    return {}
+
+
+# ---------------------------------------------------------------- RunPod API v2
+def have_api_key():
+    return API_KEY_FILE.is_file() and API_KEY_FILE.stat().st_size > 0
+
+
+def api(method, path, params=None, body=None, timeout=60):
+    if not have_api_key():
+        raise NoApiKey(f"没有 API key 文件 {API_KEY_FILE}")
+    if API_KEY_FILE.stat().st_mode & 0o077:
+        raise GuardError(f"{API_KEY_FILE} 权限过宽，请 chmod 600")
+    url = f"{API_BASE}{path}"
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Authorization", "Bearer " + API_KEY_FILE.read_text().strip())
+    req.add_header("Accept", "application/json")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read().decode()
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            j = json.loads(e.read().decode())
+            detail = j.get("detail") or j.get("title") or ""
+        except Exception:
+            pass
+        raise GuardError(f"API {method} {path} → HTTP {e.code} {detail}".strip())
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise GuardError(f"API {method} {path} 连接失败: {getattr(e, 'reason', e)}")
+    return json.loads(raw) if raw.strip() else None
+
+
+def norm_v2(p):
+    rt = p.get("runtime") or {}
+    gpus = rt.get("gpus") or []
+    utils = [g.get("util") for g in gpus if g.get("util") is not None]
+    ssh = ((p.get("ssh") or {}).get("direct") or {}).get("command")
+    started = parse_time(p.get("startedAt"))
+    if not started and rt.get("uptime"):
+        started = now() - dt.timedelta(seconds=float(rt["uptime"]))
+    return {"id": p.get("id"), "name": p.get("name") or "", "status": str(p.get("status") or "").upper(),
+            "cost": p.get("cost"), "started": started, "created": parse_time(p.get("createdAt")),
+            "gpu": (p.get("gpu") or {}).get("id"), "util": max(utils) if utils else None,
+            "ssh": ssh, "dc": p.get("dataCenterId"), "src": "api"}
+
+
+# ---------------------------------------------------------------- runpodctl 兜底
+def ctl(*args, timeout=60):
+    try:
+        r = subprocess.run([RUNPODCTL, *args], capture_output=True, text=True, timeout=timeout)
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        raise GuardError(f"runpodctl {' '.join(args[:2])} 失败: {e}")
+    if r.returncode != 0:
+        raise GuardError(f"runpodctl {' '.join(args[:2])} 失败: {(r.stderr or r.stdout).strip()[:300]}")
+    out = r.stdout.strip()
+    try:
+        return json.loads(out) if out else None
+    except json.JSONDecodeError:
+        return out
+
+
+def as_list(x, key=None):
+    if x is None:
+        return []
+    if isinstance(x, dict):
+        for k in (key, "pods", "items", "data"):
+            if k and isinstance(x.get(k), list):
+                return x[k]
+        return [x]
+    return x if isinstance(x, list) else []
+
+
+def norm_ctl(p):
+    started = parse_time(p.get("lastStartedAt"))
+    up = (p.get("runtime") or {}).get("uptimeInSeconds")
+    if not started and up:
+        started = now() - dt.timedelta(seconds=float(up))
+    cost = p.get("adjustedCostPerHr") or p.get("costPerHr")
+    return {"id": p.get("id"), "name": p.get("name") or "", "status": str(p.get("desiredStatus") or "").upper(),
+            "cost": float(cost) if cost else None, "started": started, "created": None,
+            "gpu": (p.get("machine") or {}).get("gpuDisplayName") or p.get("gpuTypeId"),
+            "util": None, "ssh": None, "dc": None, "src": "runpodctl"}
+
+
+# ---------------------------------------------------------------- 统一接口
+def list_pods(allow_fallback=True):
+    """返回 (pods, 来源)。API 失败且允许时退回 runpodctl。"""
+    try:
+        return [norm_v2(p) for p in as_list(api("GET", "/v2/pods"), "pods")], "api"
+    except GuardError as e:
+        if not allow_fallback:
+            raise
+        if not isinstance(e, NoApiKey):
+            log(f"WARN API 不可用（{e}），改用 runpodctl", also_print=False)
+        return [norm_ctl(p) for p in as_list(ctl("pod", "list", "--all"))], "runpodctl"
+
+
+def atlas_pods(allow_fallback=True):
+    pods, src = list_pods(allow_fallback)
+    return [p for p in pods if p["name"].startswith(PREFIX)], src
+
+
+def pod_action(pod, action):
+    """action: stop / delete。只允许 atlas- pod。"""
+    if not pod["name"].startswith(PREFIX):
+        raise GuardError(f"拒绝操作非 atlas- pod: {pod['name']}")
+    try:
+        if action == "stop":
+            api("POST", f"/v2/pods/{pod['id']}/action", body={"action": "stop"})
+        else:
+            api("DELETE", f"/v2/pods/{pod['id']}")
+    except GuardError as e:
+        log(f"WARN API {action} 失败（{e}），改用 runpodctl", also_print=False)
+        ctl("pod", action, pod["id"], timeout=120)
+
+
+def find_global_volume():
+    cfg = load_config()
+    want = cfg.get("global_volume_id")
+    for v in as_list(api("GET", "/v2/global-volumes"), "globalVolumes"):
+        if (want and v.get("id") == want) or (not want and v.get("name") == VOLUME_NAME):
+            return v
+    return None
+
+
+def gpu_availability(gpu_ids):
+    """返回 {gpuId: (availability, price, [dc...], [cuda...])}，覆盖所有区域。"""
+    out = {}
+    if have_api_key():
+        for g in gpu_ids:
+            try:
+                j = api("GET", f"/v2/catalog/gpus/{urllib.parse.quote(g, safe='')}",
+                        {"include": "AVAILABILITY", "product": "POD", "cloud": "SECURE", "minCudaVersion": MIN_CUDA})
+            except GuardError:
+                continue
+            j = (as_list(j, "gpus") or [{}])[0]
+            dcs = [d.get("id") for d in j.get("dataCenters") or [] if str(d.get("availability")).upper() != "NONE"]
+            cuda = [c.get("version") for c in j.get("cudaVersions") or [] if c.get("available")]
+            out[g] = (str(j.get("availability") or "NONE").upper(), (j.get("price") or {}).get("secure"), dcs, cuda)
+        return out
+    # 没有 key（只在 dry-run 时会走到这里）：用 runpodctl 的库存数据近似
+    for d in as_list(ctl("datacenter", "list")):
+        for g in d.get("gpuAvailability") or []:
+            gid, s = g.get("gpuId"), str(g.get("stockStatus") or "none").upper()
+            if gid in gpu_ids and s not in ("NONE", ""):
+                lvl, price, dcs, cuda = out.get(gid, ("NONE", None, [], []))
+                out[gid] = (s if lvl == "NONE" else lvl, price, dcs + [d.get("id")], cuda)
+    for g in as_list(ctl("gpu", "list")):
+        if g.get("gpuId") in out:
+            lvl, _, dcs, cuda = out[g["gpuId"]]
+            out[g["gpuId"]] = (lvl, g.get("securePricePerHr"), dcs, cuda)
+    return out
+
+
+def plan_gpus(want, avail):
+    """按白名单 + 库存给出尝试顺序。A100 有货时不允许 H100。"""
+    if want not in GPU_ALIASES:
+        raise GuardError(f"GPU '{want}' 不在白名单。可选: {', '.join(GPU_ALIASES)}")
+    ok = lambda g: avail.get(g, ("NONE",))[0] != "NONE"
+    a100_ok = [g for g in A100_IDS if ok(g)]
+    cands = GPU_ALIASES[want]
+    if a100_ok and not any(g in A100_IDS for g in cands):
+        raise GuardError(f"A100 80GB 当前有货（{', '.join(a100_ok)}），规则不允许改用 H100")
+    order = [g for g in cands if g in A100_IDS and ok(g)]
+    if not order:  # A100 全部没货 → 才允许 H100
+        order = [g for g in cands if g in H100_IDS and ok(g)]
+    if not order:
+        raise GuardError("所有区域都没有可用的白名单 GPU：" +
+                         ", ".join(f"{g}={avail.get(g, ('NONE',))[0]}" for g in cands))
+    return order
 
 
 # ---------------------------------------------------------------- 状态文件
@@ -163,142 +327,60 @@ def save_state(pod_id, st):
     tmp.replace(state_path(pod_id))
 
 
-def load_config():
-    if CONFIG_FILE.exists():
-        return json.loads(CONFIG_FILE.read_text())
-    return {}
-
-
-# ---------------------------------------------------------------- RunPod 查询
-def list_pods():
-    return as_list(rp("pod", "list", "--all"))
-
-
-def atlas_pods():
-    return [p for p in list_pods() if is_atlas(p)]
-
-
-def find_volume():
-    """找 Network Volume：优先配置文件里的 ID，否则按名字 atlas_data 查。"""
-    cfg = load_config()
-    vols = as_list(rp("network-volume", "list"))
-    want_id = cfg.get("network_volume_id")
-    for v in vols:
-        if (want_id and v.get("id") == want_id) or (not want_id and v.get("name") == VOLUME_NAME):
-            return {"id": v.get("id"), "name": v.get("name"), "size": v.get("size"),
-                    "dc": v.get("dataCenterId") or (v.get("dataCenter") or {}).get("id")}
-    return None
-
-
-def stock_in_dc(dc_id):
-    """返回 {gpuId: stockStatus}，只看指定数据中心。"""
-    out = {}
-    for d in as_list(rp("datacenter", "list")):
-        if d.get("id") == dc_id:
-            for g in d.get("gpuAvailability") or []:
-                out[g.get("gpuId")] = str(g.get("stockStatus") or "").lower()
-    return out
-
-
-def gpu_prices():
-    out = dict(FALLBACK_PRICE)
-    try:
-        for g in as_list(rp("gpu", "list")):
-            if g.get("gpuId") and g.get("securePricePerHr"):
-                out[g["gpuId"]] = float(g["securePricePerHr"])
-    except GuardError:
-        pass
-    return out
-
-
-def pod_price(pod, st):
-    for k in ("adjustedCostPerHr", "costPerHr"):
-        if pod.get(k):
-            try:
-                return float(pod[k])
-            except (TypeError, ValueError):
-                pass
-    return st.get("price_per_hr")
-
-
-def pod_start_time(pod, st):
-    """本次运行的起点：优先 RunPod 返回的 lastStartedAt / uptime，其次 gpu-up 记录的时间。"""
-    t = parse_time(pod.get("lastStartedAt"))
-    if t:
-        return t
-    up = (pod.get("runtime") or {}).get("uptimeInSeconds")
-    if up:
-        return now() - dt.timedelta(seconds=float(up))
-    return parse_time(st.get("created_at"))
+def run_start(pod, st):
+    """本次运行的起点：RunPod 的 startedAt / uptime → 创建时间 → gpu-up 记录。"""
+    return pod["started"] or pod["created"] or parse_time(st.get("created_at"))
 
 
 # ---------------------------------------------------------------- SSH
-def ssh_base(pod_id):
-    """拿到 pod 的 SSH 命令（列表形式）。拿不到返回 None。"""
+def ssh_base(pod):
     override = os.environ.get("ATLAS_GPU_SSH")
     if override:
-        return shlex.split(override.replace("{pod}", pod_id))
-    try:
-        info = rp("ssh", "info", pod_id, timeout=30)
-    except GuardError:
+        return shlex.split(override.replace("{pod}", pod["id"]))
+    if not pod.get("ssh"):
         return None
-    cmd = None
-    if isinstance(info, dict):
-        for k in ("sshCommand", "ssh_command", "command"):
-            if info.get(k):
-                cmd = info[k]
-                break
-        if not cmd and info.get("ip") and info.get("port"):
-            cmd = f"ssh root@{info['ip']} -p {info['port']}"
-            if info.get("key") or info.get("keyPath"):
-                cmd += f" -i {info.get('key') or info.get('keyPath')}"
-    elif isinstance(info, str):
-        m = re.search(r"ssh\s+\S.*", info)
-        cmd = m.group(0).strip() if m else None
-    if not cmd:
-        return None
-    parts = shlex.split(cmd)
+    parts = shlex.split(pod["ssh"])
     opts = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
             "-o", "StrictHostKeyChecking=accept-new",
             "-o", f"UserKnownHostsFile={HOME / '.ssh/known_hosts_runpod'}"]
+    if SSH_KEY.exists() and "-i" not in parts:
+        opts += ["-i", str(SSH_KEY)]
     return [parts[0], *opts, *parts[1:]]
 
 
-def ssh_command_str(pod_id):
-    base = ssh_base(pod_id)
-    if not base:
+def ssh_human(pod):
+    if not pod.get("ssh"):
         return None
-    # 给人看的版本：去掉巡检专用的选项
-    out, skip = [], False
-    for a in base:
-        if skip:
-            skip = False
-            continue
-        if a == "-o":
-            skip = True
-            continue
-        out.append(a)
-    return " ".join(shlex.quote(a) for a in out)
+    cmd = pod["ssh"]
+    if SSH_KEY.exists() and " -i " not in f" {cmd} ":
+        cmd += f" -i {SSH_KEY}"
+    return cmd
 
 
-def probe_gpu(pod_id):
-    """SSH 到 pod 采样 5 秒 GPU 利用率，顺便看 busy 标记。
-    返回 (util_max 或 None, busy: bool, 说明)。"""
-    base = ssh_base(pod_id)
+def ssh_run(pod, remote, timeout=60):
+    base = ssh_base(pod)
     if not base:
-        return None, False, "拿不到 SSH 信息"
+        return None, "没有 SSH 信息"
+    try:
+        r = subprocess.run([*base, remote], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None, "SSH 超时"
+    if r.returncode != 0:
+        return None, f"SSH 失败 rc={r.returncode}"
+    return r.stdout, "ok"
+
+
+def probe_gpu(pod):
+    """SSH 采样 5 秒 GPU 利用率 + busy 标记。返回 (util 或 None, busy, 说明)。"""
     remote = (
         "for i in 1 2 3 4 5; do nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits; sleep 1; done"
         f" | sort -n | tail -1; if [ -f {BUSY_MARKER} ]; then echo BUSY_AGE=$(( $(date +%s) - $(stat -c %Y {BUSY_MARKER}) )); fi"
     )
-    try:
-        r = subprocess.run([*base, remote], capture_output=True, text=True, timeout=60)
-    except subprocess.TimeoutExpired:
-        return None, False, "SSH 超时"
-    if r.returncode != 0:
-        return None, False, f"SSH 失败 rc={r.returncode}"
+    out, why = ssh_run(pod, remote)
+    if out is None:
+        return None, False, why
     util, busy = None, False
-    for line in r.stdout.splitlines():
+    for line in out.splitlines():
         line = line.strip()
         if line.startswith("BUSY_AGE="):
             try:
@@ -310,21 +392,39 @@ def probe_gpu(pod_id):
     return util, busy, "ok" if util is not None else "nvidia-smi 无输出"
 
 
+def stop_pod(pod, reason, dry_run=False, delete=False):
+    if not pod["name"].startswith(PREFIX):  # 双保险
+        raise GuardError(f"拒绝操作非 atlas- pod: {pod['name']}")
+    action = "delete" if delete else "stop"
+    if dry_run:
+        log(f"[dry-run] 会 {action} {pod['id']} {pod['name']}：{reason}")
+        return
+    if pod["status"] == "RUNNING":
+        # 容器盘在 stop 后会清空：先尽力把结果同步回 Global volume（有超时，失败也继续 stop）
+        out, why = ssh_run(pod, f"[ -x {PRE_STOP} ] && timeout {PRE_STOP_TIMEOUT} {PRE_STOP} || true",
+                           timeout=PRE_STOP_TIMEOUT + 30)
+        log(f"PRE_STOP {pod['id']} {pod['name']}: {why}", also_print=False)
+    pod_action(pod, action)
+    log(f"{action.upper()} {pod['id']} {pod['name']}：{reason}")
+    if delete:
+        state_path(pod["id"]).unlink(missing_ok=True)
+
+
 # ---------------------------------------------------------------- gpu-up
-def pick_gpu(want, stock):
-    """按白名单 + 库存挑 GPU。A100 有货时不允许 H100。"""
-    if want not in GPU_ALIASES:
-        raise GuardError(f"GPU '{want}' 不在白名单。可选: {', '.join(GPU_ALIASES)}")
-    a100_in_stock = [g for g in A100_IDS if stock.get(g) in IN_STOCK]
-    candidates = GPU_ALIASES[want]
-    if any(g in H100_IDS for g in candidates) and not any(g in A100_IDS for g in candidates):
-        if a100_in_stock:
-            raise GuardError(f"A100 80GB 当前有货（{', '.join(a100_in_stock)}），规则不允许改用 H100")
-    for g in candidates:
-        if stock.get(g) in IN_STOCK:
-            return g
-    raise GuardError("Network Volume 所在数据中心暂无可用的白名单 GPU：" +
-                     ", ".join(f"{g}={stock.get(g) or 'none'}" for g in candidates))
+def pod_public_keys():
+    """注入 pod 的 SSH 公钥：本服务器专用 key + 账户里已登记的公钥（保留 Joey 自己的登录方式）。"""
+    keys = []
+    pub = SSH_KEY.with_suffix(".pub")
+    if pub.exists():
+        keys.append(pub.read_text().strip())
+    try:
+        for k in as_list(ctl("ssh", "list-keys"), "keys"):
+            k = k.get("key") if isinstance(k, dict) else k
+            if isinstance(k, str) and k.startswith(("ssh-", "ecdsa-")):
+                keys.append(k.strip())
+    except GuardError:
+        pass
+    return "\n".join(dict.fromkeys(keys))
 
 
 def cmd_up(a):
@@ -333,98 +433,117 @@ def cmd_up(a):
     name = a.name if (a.name or "").startswith(PREFIX) else PREFIX + (a.name or now().strftime("%Y%m%d-%H%M"))
     if not re.fullmatch(r"atlas-[A-Za-z0-9_-]{1,40}", name):
         raise GuardError(f"pod 名字不合法: {name}")
+    if not a.dry_run and not have_api_key():
+        raise GuardError(f"开 pod 需要 RunPod API key 文件 {API_KEY_FILE}（见 guard/README.md）")
+    if not a.dry_run and not SSH_KEY.exists():
+        raise GuardError(f"缺少 SSH key {SSH_KEY}，先运行 guard/install.sh")
 
-    running = [p for p in atlas_pods() if pod_running(p)]
-    if len(running) >= MAX_PODS:
-        raise GuardError(f"已有 {len(running)} 个 atlas- pod 在运行（上限 {MAX_PODS}）：" +
-                         ", ".join(p.get("name", "?") for p in running) + "。先 gpu-down。")
+    pods, src = atlas_pods(allow_fallback=a.dry_run)
+    active = [p for p in pods if p["status"] in ACTIVE]
+    if len(active) >= MAX_PODS:
+        raise GuardError(f"已有 {len(active)} 个 atlas- pod 在运行（上限 {MAX_PODS}）：" +
+                         ", ".join(p["name"] for p in active) + "。先 gpu-down。")
 
-    vol = find_volume()
-    if not vol:
-        if not a.dry_run:
-            raise GuardError(f"找不到 Network Volume '{VOLUME_NAME}'。请先在 RunPod 后台创建，"
-                             f"或在 {CONFIG_FILE} 写入 network_volume_id。")
-        vol = {"id": "<VOLUME_ID>", "name": VOLUME_NAME, "dc": a.dc_hint, "size": None}
-        print(f"[dry-run] 还没有 Network Volume，假设建在 {a.dc_hint}")
+    if have_api_key():
+        vol = find_global_volume()
+        if not vol:
+            raise GuardError(f"找不到 Global volume '{VOLUME_NAME}'（或 config 里的 global_volume_id）")
+        vol_id = vol["id"]
+    else:
+        vol_id = "<GLOBAL_VOLUME_ID>"
+        print("[dry-run] 没有 API key：库存来自 runpodctl，Global volume ID 用占位符")
 
-    stock = stock_in_dc(vol["dc"])
-    gpu = pick_gpu(a.gpu, stock)
-    price = gpu_prices().get(gpu)
-    est = price * a.hours if price else None
+    # 不管要哪种卡都要查 A100 库存：A100 有货时不允许 H100
+    avail = gpu_availability(list(dict.fromkeys(A100_IDS + GPU_ALIASES.get(a.gpu, []))))
+    order = plan_gpus(a.gpu, avail)
+    env = {"ATLAS_VOL": VOL_MOUNT, "ATLAS_LOCAL": LOCAL_ROOT, "ATLAS_POD_NAME": name}
+    pubkeys = pod_public_keys()
+    if pubkeys:
+        env["PUBLIC_KEY"] = pubkeys
+
+    def body_for(gpu):
+        g = {"id": gpu, "count": 1}
+        cuda = avail.get(gpu, (None, None, [], []))[3]
+        if cuda:
+            g["allowedCudaVersions"] = cuda
+        return {"name": name, "image": a.image, "cloud": "SECURE", "gpu": g, "disk": a.disk,
+                "ports": ["22/tcp"], "env": env,
+                "mounts": {"global": [{"volumeId": vol_id, "path": VOL_MOUNT}]}}
+        # 不传 dataCenterIds：Global volume 不绑机房，让调度器在任何有货的区域开
+
+    def price_of(gpu):
+        return avail.get(gpu, (None, None))[1] or FALLBACK_PRICE.get(gpu)
+
     deadline = now() + dt.timedelta(hours=a.hours)
-
-    cmd = [RUNPODCTL, "pod", "create",
-           "--name", name, "--gpu-id", gpu, "--gpu-count", "1",
-           "--image", a.image, "--cloud-type", "SECURE",
-           "--data-center-ids", vol["dc"], "--network-volume-id", vol["id"],
-           "--volume-mount-path", MOUNT_PATH,
-           "--container-disk-in-gb", str(a.disk), "--ports", "22/tcp,8888/http"]
-
     print(f"名字     : {name}")
-    print(f"GPU      : {gpu}（库存 {stock.get(gpu)}）")
-    print(f"数据中心 : {vol['dc']}，Volume {vol['name']} → {MOUNT_PATH}")
+    print("GPU 顺序 : " + " → ".join(f"{g}（{avail[g][0]}，{len(avail[g][2])} 个区域）" for g in order))
+    print(f"Volume   : Global {VOLUME_NAME} → {VOL_MOUNT}（pod 内变量 $ATLAS_VOL）")
+    print(f"容器盘   : {a.disk} GB（$ATLAS_LOCAL={LOCAL_ROOT}，stop 后清空）")
     print(f"镜像     : {a.image}")
     print(f"时长上限 : {a.hours:g} h（到 {iso(deadline)} 自动 stop）")
-    print(f"估算花费 : ${price:.2f}/h × {a.hours:g} h ≈ ${est:.2f}（上限）" if price else "估算花费 : 价格未知")
+    p0 = price_of(order[0])
+    print(f"估算花费 : ${p0:.2f}/h × {a.hours:g} h ≈ ${p0 * a.hours:.2f}（上限，不含容器盘和 Volume 存储）" if p0 else "估算花费 : 价格未知")
     if a.dry_run:
-        print("[dry-run] 将执行: " + " ".join(shlex.quote(c) for c in cmd))
+        shown = body_for(order[0])
+        shown["env"] = {**env, "PUBLIC_KEY": f"<{len(pubkeys.splitlines())} 个公钥>"} if pubkeys else env
+        print("[dry-run] 将 POST /v2/pods:\n" + json.dumps(shown, indent=2, ensure_ascii=False))
         return 0
 
-    created = rp(*cmd[1:], timeout=180)
-    pod = as_list(created)[0] if as_list(created) else {}
-    pod_id = pod.get("id")
-    if not pod_id:  # 兜底：按名字再查一次
-        pod_id = next((p.get("id") for p in atlas_pods() if p.get("name") == name), None)
-    if not pod_id:
-        raise GuardError("pod create 没返回 ID，请立刻 gpu-status 检查！")
-    save_state(pod_id, {"name": name, "gpu": gpu, "price_per_hr": price, "max_hours": a.hours,
-                        "created_at": iso(now()), "deadline": iso(deadline), "idle_since": None})
-    log(f"UP {pod_id} {name} gpu={gpu} max_hours={a.hours:g} price={price}")
-
-    print(f"\npod ID   : {pod_id}")
-    ssh = None
-    t0 = time.time()
-    while time.time() - t0 < a.wait * 60:
-        ssh = ssh_command_str(pod_id)
-        if ssh:
+    pod, errors = None, []
+    for gpu in order:
+        try:
+            pod = api("POST", "/v2/pods", body=body_for(gpu), timeout=120)
             break
-        time.sleep(15)
-    print(f"SSH      : {ssh}" if ssh else f"SSH      : 暂未就绪，稍后运行 runpodctl ssh info {pod_id}")
+        except GuardError as e:
+            errors.append(f"{gpu}: {e}")
+            print(f"  {gpu} 开不出来：{e}")
+    if pod is None and order[0] in A100_IDS and a.gpu == "auto":
+        avail.update(gpu_availability(H100_IDS))
+        h100 = [g for g in H100_IDS if avail.get(g, ("NONE",))[0] != "NONE"]
+        if h100:
+            print("  所有 A100 都开不出来，按规则改试 H100")
+            for gpu in h100:
+                try:
+                    pod = api("POST", "/v2/pods", body=body_for(gpu), timeout=120)
+                    break
+                except GuardError as e:
+                    errors.append(f"{gpu}: {e}")
+    if pod is None:
+        raise GuardError("没有开出 pod：" + "；".join(errors))
+
+    pod = norm_v2(pod)
+    save_state(pod["id"], {"name": name, "gpu": pod["gpu"], "price_per_hr": pod["cost"] or price_of(pod["gpu"]),
+                           "max_hours": a.hours, "created_at": iso(now()), "deadline": iso(deadline),
+                           "idle_since": None})
+    log(f"UP {pod['id']} {name} gpu={pod['gpu']} max_hours={a.hours:g}")
+    print(f"\npod ID   : {pod['id']}")
+    t0 = time.time()
+    while time.time() - t0 < a.wait * 60 and not pod.get("ssh"):
+        time.sleep(10)
+        try:
+            pod = norm_v2(api("GET", f"/v2/pods/{pod['id']}"))
+        except GuardError:
+            pass
+    print(f"区域     : {pod.get('dc') or '?'}，状态 {pod['status']}")
+    print(f"SSH      : {ssh_human(pod)}" if pod.get("ssh") else
+          f"SSH      : 暂未就绪，稍后 gpu-status -v 查看")
     return 0
 
 
 # ---------------------------------------------------------------- gpu-down
-def resolve_target(target):
-    pods = atlas_pods()
-    hits = [p for p in pods if p.get("id") == target or p.get("name") == target]
-    if not hits:
-        others = [p for p in list_pods() if p.get("id") == target or p.get("name") == target]
-        if others:
-            raise GuardError(f"{target} 不是 atlas- 前缀的 pod，拒绝操作")
-        raise GuardError(f"找不到 atlas- pod: {target}")
-    if len(hits) > 1:
-        raise GuardError(f"{target} 匹配到多个 pod，请用 pod ID")
-    return hits[0]
-
-
-def stop_pod(pod, reason, dry_run=False, delete=False):
-    pid, name = pod.get("id"), pod.get("name")
-    if not is_atlas(pod):  # 双保险
-        raise GuardError(f"拒绝操作非 atlas- pod: {name}")
-    action = "delete" if delete else "stop"
-    if dry_run:
-        log(f"[dry-run] 会 {action} {pid} {name}：{reason}")
-        return
-    rp("pod", action, pid, timeout=120)
-    log(f"{action.upper()} {pid} {name}：{reason}")
-    if delete:
-        state_path(pid).unlink(missing_ok=True)
-
-
 def cmd_down(a):
-    targets = atlas_pods() if a.all else [resolve_target(a.target)]
-    if a.all and not a.delete:
-        targets = [p for p in targets if pod_running(p)]
+    pods, _ = atlas_pods()
+    if a.all:
+        targets = pods if a.delete else [p for p in pods if p["status"] in ACTIVE]
+    else:
+        targets = [p for p in pods if a.target in (p["id"], p["name"])]
+        if not targets:
+            allp, _ = list_pods()
+            if any(a.target in (p["id"], p["name"]) for p in allp):
+                raise GuardError(f"{a.target} 不是 atlas- 前缀的 pod，拒绝操作")
+            raise GuardError(f"找不到 atlas- pod: {a.target}")
+        if len(targets) > 1:
+            raise GuardError(f"{a.target} 匹配到多个 pod，请用 pod ID")
     if not targets:
         print("没有需要处理的 atlas- pod")
     for p in targets:
@@ -434,84 +553,90 @@ def cmd_down(a):
 
 # ---------------------------------------------------------------- gpu-status
 def cmd_status(a):
-    pods = atlas_pods()
+    pods, src = atlas_pods()
     if not pods:
-        print("没有 atlas- pod")
+        print(f"没有 atlas- pod（数据来源 {src}）")
         return 0
     total = 0.0
-    print(f"{'名字':<22}{'状态':<10}{'GPU':<24}{'已运行':>8}{'$/h':>7}{'已花费':>9}{'距自动关机':>12}  空闲")
+    print(f"{'名字':<22}{'状态':<13}{'GPU':<24}{'已运行':>8}{'$/h':>7}{'已花费':>9}{'距自动关机':>12}  GPU%  空闲")
     for p in pods:
-        st = load_state(p.get("id"))
-        price = pod_price(p, st)
-        start = pod_start_time(p, st)
-        run = pod_running(p)
-        elapsed = (now() - start).total_seconds() if (start and run) else None
+        st = load_state(p["id"])
+        price = p["cost"] or st.get("price_per_hr")
+        start = run_start(p, st)
+        act = p["status"] in ACTIVE
+        elapsed = (now() - start).total_seconds() if (start and act) else None
         cost = price * elapsed / 3600 if (price and elapsed) else None
         total += cost or 0
         max_h = float(st.get("max_hours") or MAX_HOURS)
         left = (max_h * 3600 - elapsed) if elapsed is not None else None
         idle = st.get("idle_since")
         idle_txt = f"空闲 {fmt_dur((now() - parse_time(idle)).total_seconds())}" if idle else "-"
-        gpu = st.get("gpu") or (p.get("machine") or {}).get("gpuDisplayName") or p.get("gpuTypeId") or "?"
-        print(f"{p.get('name', '?'):<22}{str(p.get('desiredStatus')):<10}{gpu[:23]:<24}"
-              f"{fmt_dur(elapsed) if run else '-':>8}{(f'{price:.2f}' if price else '?'):>7}"
-              f"{(f'${cost:.2f}' if cost is not None else '-'):>9}{(fmt_dur(left) if run else '-'):>12}  {idle_txt}")
+        gpu = p["gpu"] or st.get("gpu") or "?"
+        util = f"{p['util']:g}" if p["util"] is not None else "-"
+        print(f"{p['name']:<22}{p['status']:<13}{gpu[:23]:<24}"
+              f"{fmt_dur(elapsed) if act else '-':>8}{(f'{price:.2f}' if price else '?'):>7}"
+              f"{(f'${cost:.2f}' if cost is not None else '-'):>9}{(fmt_dur(left) if act else '-'):>12}  {util:>4}  {idle_txt}")
         if a.verbose:
-            print(f"    id={p.get('id')}")
-    print(f"本次运行累计估算: ${total:.2f}（只算正在运行的 pod，按 $/h × 本次运行时长）")
+            print(f"    id={p['id']} 区域={p.get('dc') or '?'}")
+            if ssh_human(p):
+                print(f"    ssh: {ssh_human(p)}")
+    print(f"本次运行累计估算: ${total:.2f}（只算运行中的 pod，$/h × 本次运行时长；数据来源 {src}）")
     return 0
 
 
 # ---------------------------------------------------------------- gpu-guard（巡检）
 def cmd_guard(a):
     try:
-        pods = atlas_pods()
+        pods, src = atlas_pods()
     except GuardError as e:
-        log(f"ERROR 拿不到 pod 列表：{e}")
+        log(f"ERROR 拿不到 pod 列表（API 和 runpodctl 都失败）：{e}")
         return 1
-    running = [p for p in pods if pod_running(p)]
-    if not running:
+    active = [p for p in pods if p["status"] in ACTIVE]
+    if not active:
         if a.verbose:
-            log("巡检：没有运行中的 atlas- pod")
+            log(f"巡检：没有运行中的 atlas- pod（{src}）")
         return 0
     rc = 0
-    for p in running:
-        pid, name = p.get("id"), p.get("name")
-        st = load_state(pid)
-        if not st:  # 不是 gpu-up 开的 → 按最严格的默认值管
-            st = {"name": name, "max_hours": MAX_HOURS, "created_at": iso(now()), "idle_since": None,
+    for p in active:
+        st = load_state(p["id"])
+        if not st:
+            st = {"name": p["name"], "max_hours": MAX_HOURS, "created_at": iso(now()), "idle_since": None,
                   "note": "非 gpu-up 创建，按默认 6h 管理"}
-            log(f"WARN {pid} {name} 没有 gpu-up 记录，按 {MAX_HOURS:g}h 上限管理")
-        start = pod_start_time(p, st)
+            log(f"WARN {p['id']} {p['name']} 没有 gpu-up 记录，按 {MAX_HOURS:g}h 上限管理")
+        start = run_start(p, st)
         elapsed = (now() - start).total_seconds() if start else 0
         max_h = min(float(st.get("max_hours") or MAX_HOURS), MAX_HOURS)
         try:
-            # 1) 超时
+            # 1) 超时：只依赖 pod 列表（API 或 runpodctl），不需要 SSH
             if elapsed >= max_h * 3600:
                 stop_pod(p, f"超过时长上限 {max_h:g}h（已运行 {fmt_dur(elapsed)}）", dry_run=a.dry_run)
                 continue
-            # 2) GPU 空闲
-            util, busy, why = probe_gpu(pid)
+            # 2) 空闲：API 利用率 > 0 直接算忙；为 0 或拿不到时，再 SSH 用 nvidia-smi 复核 + 看 busy 标记
+            util, busy, why = p["util"], False, "api"
+            if util is None or util == 0:
+                s_util, busy, why = probe_gpu(p)
+                if s_util is not None:
+                    util = s_util
             in_grace = elapsed < IDLE_MINUTES * 60
             if util is not None and (util > 0 or busy):
                 st["idle_since"] = None
                 state = f"util={util:g}%" + (" busy" if busy else "")
-            elif util is None and in_grace:
-                state = f"探测失败（{why}），开机 {IDLE_MINUTES} 分钟内不计空闲"
+            elif util is None and (in_grace or p["status"] != "RUNNING"):
+                state = f"探测失败（{why}），{p['status']}，开机 {IDLE_MINUTES} 分钟内不计空闲"
             else:
-                # util == 0，或开机超过 30 分钟仍探测不到（SSH 不通的 pod 同样在白烧钱）
                 st["idle_since"] = st.get("idle_since") or iso(now())
                 idle_for = (now() - parse_time(st["idle_since"])).total_seconds()
-                state = (f"util=0%" if util is not None else f"探测失败（{why}）") + f"，已空闲 {fmt_dur(idle_for)}"
-                if idle_for >= IDLE_MINUTES * 60 - 30:  # 留 30s 余量，避免 cron 抖动多等一轮
+                state = ("util=0%" if util is not None else f"探测失败（{why}）") + f"，已空闲 {fmt_dur(idle_for)}"
+                if idle_for >= IDLE_MINUTES * 60 - 30:
                     stop_pod(p, f"GPU 连续空闲 ≥{IDLE_MINUTES} 分钟（{state}）", dry_run=a.dry_run)
                     continue
-            log(f"巡检 {pid} {name}: 已运行 {fmt_dur(elapsed)}/{max_h:g}h，{state}", also_print=a.verbose)
+            log(f"巡检 {p['id']} {p['name']}: 已运行 {fmt_dur(elapsed)}/{max_h:g}h，{state}（{src}）",
+                also_print=a.verbose)
         except GuardError as e:
-            log(f"ERROR {pid} {name}: {e}")
+            log(f"ERROR {p['id']} {p['name']}: {e}")
             rc = 1
         finally:
-            save_state(pid, st)
+            save_state(p["id"], st)
     return rc
 
 
@@ -533,7 +658,6 @@ def main(argv=None):
     up.add_argument("--name", help="pod 名字（自动加 atlas- 前缀）")
     up.add_argument("--disk", type=int, default=DEFAULT_CONTAINER_DISK_GB, help="容器盘 GB")
     up.add_argument("--wait", type=float, default=10, help="等待 SSH 就绪的分钟数")
-    up.add_argument("--dc-hint", default="US-KS-2", help="dry-run 且没有 Volume 时假设的数据中心")
     up.add_argument("--dry-run", action="store_true")
 
     dn = sp.add_parser("down", help="stop / delete atlas- pod")
@@ -543,7 +667,7 @@ def main(argv=None):
     dn.add_argument("--dry-run", action="store_true")
 
     stp = sp.add_parser("status", help="查看 atlas- pod")
-    stp.add_argument("-v", "--verbose", action="store_true", help="显示 pod ID")
+    stp.add_argument("-v", "--verbose", action="store_true", help="显示 pod ID、区域、SSH")
 
     gd = sp.add_parser("guard", help="巡检（cron 用）")
     gd.add_argument("--dry-run", action="store_true", help="只记录会做什么，不真的 stop")
