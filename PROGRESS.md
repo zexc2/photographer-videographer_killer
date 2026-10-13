@@ -7,6 +7,7 @@
 | 0 仓库初始化 | 2026-10-13 | ~10 分钟 | $0 |
 | 1 GPU 护栏 | 2026-10-13 | ~30 分钟 | $0 |
 | 1.1 改用 Global volume | 2026-10-13 | ~45 分钟 | $0 |
+| 2 pod 环境脚本 | 2026-10-13 | ~1 小时 | $0（尚未开 pod） |
 
 ---
 
@@ -71,4 +72,29 @@
 - runpodctl 不支持 Global volume，需要 Joey 另建一个限权 API key（见 guard/README.md）
 
 **耗时**：约 45 分钟
+**花费**：$0
+
+---
+
+## 阶段 2：pod 环境脚本（2026-10-13）
+
+**做了什么**
+- 核实了三个官方仓库，固定到具体 commit：GEN3C `db2ffe1`、ViPE `8c9f361`、4C4D `ed6a3cb`（确认是 CVPR 2026 论文作者本人的仓库）、MASt3R `f5209af`
+- `pod/setup_gen3c.sh`、`setup_vipe.sh`、`setup_4c4d.sh`：幂等，按方案 C 工作（装一次 → conda-pack 打包到 Global volume → 以后开机解压）。每次运行都记录耗时、环境大小、权重大小
+- `runner/atlas_run.py`（`atlas-run`）：服务器把脚本和任务输入 rsync 到 pod → 后台执行 → 轮询进度 → 只把小文件（≤20 MB 的预览、指标）拉回服务器，并算出本次 GPU 花费。HF token 只通过 SSH stdin 传
+- `pod/run_task.sh`：busy 心跳、峰值显存采样、结束时把 `out/` 同步回 Global volume；`pre_stop.sh`：被巡检 stop 前抢救未完成任务的结果
+- `tasks/selftest.sh`：第一次开 pod 时实测 Global volume 的读写速度，方案 C 的时间估算要靠这个数据验证
+- 本机测试 `runner/tests/run_tests.sh`：20 个用例全部通过（执行器全流程、同步、拉回大小限制、失败任务、pre_stop、环境打包和恢复）；护栏测试 50 个，仍然全部通过
+
+**技术选择**
+- 4C4D 环境：官方 py3.7 / torch 1.12 / CUDA 11.6 不支持 H100 → 升级到 py3.10 / torch 2.4 / CUDA 12.4，重新编译 4 个 CUDA 扩展（采用）；出问题时退回官方环境（只能用 A100）
+- MASt3R 预处理：官方走 MAtCha（editable 安装加写死的 CUDA 11.8 路径，没法打包）→ 直接装 naver/mast3r，阶段 3 自己写"已知位姿 → 点云"脚本（采用）
+
+**遇到的问题和发现**
+- GEN3C 官方权重脚本会下载约 121 GB，其中 45 GB 是用不到的 T5 TF 权重 → 改为只下载需要的约 76 GB
+- **GEN3C 和 4C4D 的命令行都只有预设运镜**，阶段 5 的自定义关键帧需要改代码（两边都可以改，4C4D 更简单）
+- **许可**：4C4D 和 MASt3R 都是非商业许可；GEN3C 权重允许商用，但模型卡写明"关闭安全护栏会终止许可"，而官方推理脚本强制关闭了护栏。第一阶段是研究验证，不影响；商用前必须解决
+- 所有 setup 脚本都还没有在真实 pod 上验证
+
+**耗时**：约 1 小时
 **花费**：$0

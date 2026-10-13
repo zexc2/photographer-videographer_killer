@@ -83,3 +83,5 @@
 
 ## 7. 决策记录
 - 2026-10-13：存储从 Network volume（US-KS-2）改为 Global volume。原因：pod 停掉后同机房经常没货，Global 不绑机房。细节和环境方案对比见 docs/storage-and-env.md。
+- 2026-10-13：4C4D 环境升级到 py3.10 / torch 2.4 / CUDA 12.4（官方 py3.7 环境不支持 H100）；MASt3R 不走 MAtCha，直接装 naver/mast3r。详见 pod/README.md。
+- 2026-10-13（待 Joey 决定）：GEN3C 模型卡写明关闭安全护栏会终止 NVIDIA Open Model License，官方推理脚本却强制关闭护栏。第一阶段研究验证照官方脚本跑；商用前要决定怎么处理。4C4D / MASt3R / CMU Panoptic 均为非商业许可。
