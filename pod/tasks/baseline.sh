@@ -8,7 +8,10 @@
 # 每一步记录耗时和峰值显存，结果放 out/（小文件拉回服务器），完整结果由 run_task.sh 同步到 Global volume。
 RUN_DIR=$1; shift
 SEQ=${1:-171204_pose1}
-# 第二个参数 4c4d-only：环境、数据、GEN3C 都已在本 pod 上完成时，只重跑 4C4D（训练 + 渲染 + 评估）
+# 第二个参数（模式）：
+#   all        全流程（默认）
+#   4c4d-only  环境、数据、GEN3C 都已在本 pod 上完成时，只重跑 4C4D
+#   4c4d       新 pod 上只跑 4C4D：恢复 4c4d / vipe 环境，从 Global volume 解压阶段 3 数据包（不重新截取、不重跑 ViPE）
 MODE=${2:-all}
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 source "$HERE/lib/common.sh"
@@ -18,6 +21,9 @@ W=$ATLAS_WORK/panoptic/$SEQ
 S4=$W/stage4
 mkdir -p "$OUT"
 ITERS=${FOURC_ITERS:-30000}
+# 4C4D 模型放在 out/full 下：训练完立即同步到 Global volume，pre_stop 也会同步。
+# 2026-10-14 模型放在容器盘上，后续渲染失败、pod 关机后，2.4 小时的训练结果丢失
+MODEL_DIR=$OUT/full/4c4d_model
 
 # ---------------------------------------------------------------- 分阶段计时 + 峰值显存
 declare -A T_S VRAM
@@ -47,7 +53,19 @@ PY
 trap write_timing EXIT
 
 # ---------------------------------------------------------------- 1. 环境 + 数据
-if [ "$MODE" != 4c4d-only ]; then
+if [ "$MODE" = 4c4d ]; then
+  phase_begin env_and_data
+  bash "$HERE/setup_4c4d.sh"
+  env_restore vipe "$(env_key "$HERE/setup_vipe.sh")" || die "Global volume 上没有 vipe 环境包"
+  if [ ! -f "$W/meta.json" ]; then
+    PKG=$ATLAS_DATA/panoptic/$SEQ/prepared/stage3.tar
+    [ -f "$PKG" ] || die "没有阶段 3 数据包 $PKG"
+    mkdir -p "$W"
+    cp "$PKG" "$ATLAS_CACHE/stage3.tar" && tar -xf "$ATLAS_CACHE/stage3.tar" -C "$W" && rm -f "$ATLAS_CACHE/stage3.tar"
+    log "已解压阶段 3 数据包到 $W"
+  fi
+  phase_end
+elif [ "$MODE" != 4c4d-only ]; then
 phase_begin env_and_data
 bash "$HERE/setup_gen3c.sh"          # 恢复 GEN3C 环境，权重链接到 Global volume
 bash "$HERE/tasks/panoptic.sh" "$RUN_DIR" "$SEQ"   # 4c4d / mast3r / vipe 环境 + 重新准备数据（主点居中）
@@ -60,12 +78,14 @@ GEN3C_ENV=$ATLAS_ENVS/gen3c
 FOURC_ENV=$ATLAS_ENVS/4c4d
 
 # ---------------------------------------------------------------- 2. 轨迹 + 尺度对齐
-[ -f "$S4/trajectories.json" ] || "$GEN3C_ENV/bin/python" "$HERE/tools/make_trajectories.py" --work "$W"
+# make_trajectories 只需要 numpy + OpenEXR：gen3c 和 vipe 环境都有，4c4d 模式下只恢复了 vipe
+TRAJ_PY=$GEN3C_ENV/bin/python; [ -x "$TRAJ_PY" ] || TRAJ_PY=$ATLAS_ENVS/vipe/bin/python
+[ -f "$S4/trajectories.json" ] || "$TRAJ_PY" "$HERE/tools/make_trajectories.py" --work "$W"
 cp "$S4/trajectories.json" "$OUT/"
 
 # ---------------------------------------------------------------- 3. GEN3C
 GEN3C_OK=0
-if [ "$MODE" != 4c4d-only ]; then
+if [ "$MODE" = all ]; then
 phase_begin gen3c
 cat > "$S4/gen3c_jobs.json" <<JSON
 [{"name": "${SEQ}_gen3c_eval", "vipe": "$W/gen3c/vipe", "traj": "$S4/gen3c_eval.npz"},
@@ -90,7 +110,7 @@ phase_begin fourc4d_train
 # 写在这里而不是 setup_4c4d.sh，改安装脚本会让环境包失效、需要重装）
 "$FOURC_ENV/bin/python" -c "import pkg_resources" 2>/dev/null || "$FOURC_ENV/bin/python" -m pip install -q "setuptools<80"
 FC=$S4/4c4d_${SEQ}.yaml
-"$FOURC_ENV/bin/python" - "$ATLAS_SRC/4C4D/configs/dynerf/flame_steak.yaml" "$FC" "$W/4c4d" "$S4/4c4d_model" "$ITERS" <<'PY'
+"$FOURC_ENV/bin/python" - "$ATLAS_SRC/4C4D/configs/dynerf/flame_steak.yaml" "$FC" "$W/4c4d" "$MODEL_DIR" "$ITERS" <<'PY'
 import sys
 from omegaconf import OmegaConf
 c = OmegaConf.load(sys.argv[1])
@@ -107,12 +127,15 @@ FOURC_OK=1
    --training_view "$TRAIN" --output_dir run --res 2 \
    --test_iterations "$ITERS" --save_iterations "$ITERS" 2>&1 | tr '\r' '\n' | grep -vE '^Training: +[0-9]+%.*it/s\]$' | tail -40) \
   || FOURC_OK=0
-CKPT=$S4/4c4d_model/run/chkpnt_best.pth
+CKPT=$MODEL_DIR/run/chkpnt_best.pth
 [ -f "$CKPT" ] || { log "4C4D 没有产出 checkpoint"; FOURC_OK=0; }
+[ $FOURC_OK = 1 ] && { vol_sync "$OUT/" "$ATLAS_RESULTS/$(basename "$RUN_DIR")/" && log "4C4D 模型已同步到 Global volume"; } || true
 phase_end
 
 if [ $FOURC_OK = 1 ]; then
   phase_begin fourc4d_render
+  # render.py 导入的 open3d 需要 libEGL（runpod/pytorch 镜像里没有，2026-10-14 渲染因此失败）
+  apt_ensure libegl1 libgl1 libgomp1
   RARGS=(--config "$FC" --training_view "$TRAIN" --start_checkpoint "$CKPT" --res 2 --output_dir run)
   (cd "$ATLAS_SRC/4C4D" && "$FOURC_ENV/bin/python" render.py "${RARGS[@]}" --validate 2>&1 | tail -5) \
     || log "4C4D 评估机位渲染失败"
@@ -131,8 +154,8 @@ if [ $GEN3C_OK = 1 ]; then
       --video "$OUT/videos/${SEQ}_eval_gen3c_vs_gt.mp4" || log "GEN3C 评估失败"
 fi
 if [ $FOURC_OK = 1 ]; then
-  TEST_R=$(ls -d "$S4"/4c4d_model/run/render/test/ours_*/renders 2>/dev/null | tail -1)
-  TRAJ_R=$(ls -d "$S4"/4c4d_model/run/render/traj/ours_*/renders 2>/dev/null | tail -1)
+  TEST_R=$(ls -d "$MODEL_DIR"/run/render/test/ours_*/renders 2>/dev/null | tail -1)
+  TRAJ_R=$(ls -d "$MODEL_DIR"/run/render/traj/ours_*/renders 2>/dev/null | tail -1)
   if [ -n "$TEST_R" ]; then
     $EV --pred "$TEST_R" --kind 4c4d --frames 121 --out "$OUT/metrics_4c4d.json" \
         --video "$OUT/videos/${SEQ}_eval_4c4d_vs_gt.mp4" || log "4C4D 评估失败"
@@ -140,7 +163,7 @@ if [ $FOURC_OK = 1 ]; then
   fi
   [ -n "$TRAJ_R" ] && ffmpeg -loglevel error -y -framerate 24 -i "$TRAJ_R/%05d.png" -c:v libx264 -crf 18 \
     -pix_fmt yuv420p "$S4/${SEQ}_4c4d_path.mp4" || true
-  cp "$S4"/4c4d_model/run/render/test/ours_*/../../stats/*.json "$OUT/" 2>/dev/null || true
+  cp "$MODEL_DIR"/run/render/test/ours_*/../../stats/*.json "$OUT/" 2>/dev/null || true
 fi
 # 运镜视频（两个模型同一条轨迹），缩到 960 宽方便在服务器上看；完整分辨率的在 Global volume
 for v in "$S4/gen3c/${SEQ}_gen3c_path.mp4" "$S4/${SEQ}_4c4d_path.mp4" "$S4/gen3c/${SEQ}_gen3c_eval.mp4"; do
@@ -157,7 +180,7 @@ phase_end
 # fetch 只拉回 ≤20MB 的文件，且排除 .pth
 mkdir -p "$OUT/full"
 cp "$S4"/gen3c/*.mp4 "$S4"/*.mp4 "$S4"/*.yaml "$OUT/full/" 2>/dev/null || true
-tar -cf "$OUT/full/4c4d_renders.tar" -C "$S4/4c4d_model/run/render" . 2>/dev/null || true
+[ -d "$MODEL_DIR/run/render" ] && tar -cf "$OUT/full/4c4d_renders.tar" -C "$MODEL_DIR/run/render" . 2>/dev/null || true
 
 python3 - "$OUT" "$SEQ" "$GEN3C_OK" "$FOURC_OK" <<'PY'
 import json, sys, pathlib
@@ -176,4 +199,4 @@ json.dump(m, open(o / "metrics.json", "w"), indent=2, ensure_ascii=False)
 print(json.dumps(m, ensure_ascii=False))
 PY
 # 4c4d-only 模式下 GEN3C 是有意跳过的，只按 4C4D 判断成败（2026-10-14 曾因此把成功的任务报成 failed）
-if [ "$MODE" = 4c4d-only ]; then [ $FOURC_OK = 1 ]; else [ $GEN3C_OK = 1 ] && [ $FOURC_OK = 1 ]; fi
+if [ "$MODE" != all ]; then [ $FOURC_OK = 1 ]; else [ $GEN3C_OK = 1 ] && [ $FOURC_OK = 1 ]; fi

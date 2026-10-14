@@ -166,7 +166,8 @@ def fetch(run_id, pod=None):
     local = RUNS / run_id
     local.mkdir(parents=True, exist_ok=True)
     rsync(pod, f"POD:{POD_ROOT}/work/{run_id}/out/", f"{local}/out/",
-          ["--max-size", PULL_MAX_SIZE, "--exclude", "*.pt", "--exclude", "*.pth", "--exclude", "*.ply"])
+          ["--max-size", PULL_MAX_SIZE, "--exclude", "*.pt", "--exclude", "*.pth", "--exclude", "*.ply",
+           "--exclude", "full/"])  # full/：原分辨率视频、渲染图、4C4D 模型，只留在 Global volume
     meta_p = local / "run.json"
     meta = json.loads(meta_p.read_text()) if meta_p.exists() else {"run_id": run_id}
     m_p = local / "out/metrics.json"
