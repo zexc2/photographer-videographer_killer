@@ -12,7 +12,7 @@ trap 'kill $API_PID 2>/dev/null; rm -rf "$FAKE_DIR"' EXIT
 export ATLAS_RUNPOD_API="http://127.0.0.1:$PORT"
 export RUNPODCTL="$HERE/fake_runpodctl" ATLAS_GPU_SSH="$HERE/fake_ssh"
 export ATLAS_GPU_STATE="$FAKE_DIR/state" ATLAS_GPU_LOG="$FAKE_DIR/guard.log" ATLAS_GPU_CONFIG="$FAKE_DIR/config.json"
-export ATLAS_GPU_KEYFILE="$FAKE_DIR/key" ATLAS_GPU_SSH_KEY="$FAKE_DIR/sshkey"
+export ATLAS_GPU_BALANCE_LOG="$FAKE_DIR/balance.log" ATLAS_GPU_KEYFILE="$FAKE_DIR/key" ATLAS_GPU_SSH_KEY="$FAKE_DIR/sshkey"
 for i in $(seq 50); do curl -s -o /dev/null "$ATLAS_RUNPOD_API/" && break; sleep 0.1; done
 
 ago() { date -u -d "-$1 minutes" +%Y-%m-%dT%H:%M:%SZ; }
@@ -234,6 +234,10 @@ reset
 apipods "[$(pod p1 atlas-x RUNNING 60 6)]"
 state p1 "{\"max_hours\":6,\"idle_since\":\"$(ago 40)\"}"
 check "利用率 6% → 算忙、清空空闲计时"             0 "$G guard && ! called '/action' && grep -q '\"idle_since\": null' $FAKE_DIR/state/p1.json"
+
+reset
+apipods "[]"
+check "巡检记录余额到 balance.log"                0 "$G guard && grep -q '50.0000 active_atlas_pods=0' $FAKE_DIR/balance.log"
 
 echo
 echo "通过 $PASS，失败 $FAIL"

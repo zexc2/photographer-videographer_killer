@@ -665,6 +665,19 @@ def cmd_status(a):
 
 
 # ---------------------------------------------------------------- gpu-guard（巡检）
+BALANCE_LOG = Path(os.environ.get("ATLAS_GPU_BALANCE_LOG", HOME / "logs/balance.log"))
+
+
+def log_balance(n_active):
+    """每次巡检记一笔余额，用来算没开 pod 时的存储等持续费用（2026-10-14 发现余额在没开 pod 时也在降）。"""
+    bal = get_balance()
+    if bal is None:
+        return
+    BALANCE_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with BALANCE_LOG.open("a") as f:
+        f.write(f"{iso(now())} {bal:.4f} active_atlas_pods={n_active}\n")
+
+
 def cmd_guard(a):
     try:
         pods, src = atlas_pods()
@@ -672,6 +685,8 @@ def cmd_guard(a):
         log(f"ERROR 拿不到 pod 列表（API 和 runpodctl 都失败）：{e}")
         return 1
     active = [p for p in pods if p["status"] in ACTIVE]
+    if not a.dry_run:
+        log_balance(len(active))
     if not active:
         if a.verbose:
             log(f"巡检：没有运行中的 atlas- pod（{src}）")
