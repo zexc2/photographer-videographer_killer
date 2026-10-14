@@ -8,6 +8,8 @@
 # 每一步记录耗时和峰值显存，结果放 out/（小文件拉回服务器），完整结果由 run_task.sh 同步到 Global volume。
 RUN_DIR=$1; shift
 SEQ=${1:-171204_pose1}
+# 第二个参数 4c4d-only：环境、数据、GEN3C 都已在本 pod 上完成时，只重跑 4C4D（训练 + 渲染 + 评估）
+MODE=${2:-all}
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 source "$HERE/lib/common.sh"
 CFG=$HERE/configs/panoptic.json
@@ -24,7 +26,8 @@ phase_begin() {
   echo 0 > "$ATLAS_LOGS/peak_$PHASE"
   ( while [ -f "$ATLAS_LOGS/peak_$PHASE.on" ]; do
       m=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | sort -n | tail -1)
-      [ "$m" -gt "$(cat "$ATLAS_LOGS/peak_$PHASE")" ] && echo "$m" > "$ATLAS_LOGS/peak_$PHASE"
+      # 用 if，不用 [ … ] && …：后者在"不更大"时返回非 0，配合 set -e 会让采样进程直接退出（2026-10-14 实测峰值全是 0）
+      if [ -n "$m" ] && [ "$m" -gt "$(cat "$ATLAS_LOGS/peak_$PHASE")" ]; then echo "$m" > "$ATLAS_LOGS/peak_$PHASE"; fi
       sleep 3; done ) &
   touch "$ATLAS_LOGS/peak_$PHASE.on"
   log "▶ $PHASE"
@@ -44,10 +47,12 @@ PY
 trap write_timing EXIT
 
 # ---------------------------------------------------------------- 1. 环境 + 数据
+if [ "$MODE" != 4c4d-only ]; then
 phase_begin env_and_data
 bash "$HERE/setup_gen3c.sh"          # 恢复 GEN3C 环境，权重链接到 Global volume
 bash "$HERE/tasks/panoptic.sh" "$RUN_DIR" "$SEQ"   # 4c4d / mast3r / vipe 环境 + 重新准备数据（主点居中）
 phase_end
+fi
 
 META=$W/meta.json
 read -r TRAIN EVAL_CAM <<<"$(python3 -c "import json; m=json.load(open('$META')); print(m['fourc4d_training_view'], 'cam%02d' % m['eval_cam'])")"
@@ -55,27 +60,35 @@ GEN3C_ENV=$ATLAS_ENVS/gen3c
 FOURC_ENV=$ATLAS_ENVS/4c4d
 
 # ---------------------------------------------------------------- 2. 轨迹 + 尺度对齐
-"$GEN3C_ENV/bin/python" "$HERE/tools/make_trajectories.py" --work "$W"
+[ -f "$S4/trajectories.json" ] || "$GEN3C_ENV/bin/python" "$HERE/tools/make_trajectories.py" --work "$W"
 cp "$S4/trajectories.json" "$OUT/"
 
 # ---------------------------------------------------------------- 3. GEN3C
+GEN3C_OK=0
+if [ "$MODE" != 4c4d-only ]; then
 phase_begin gen3c
 cat > "$S4/gen3c_jobs.json" <<JSON
 [{"name": "${SEQ}_gen3c_eval", "vipe": "$W/gen3c/vipe", "traj": "$S4/gen3c_eval.npz"},
  {"name": "${SEQ}_gen3c_path", "vipe": "$W/gen3c/vipe", "traj": "$S4/gen3c_path.npz"}]
 JSON
 GEN3C_OK=1
+# 权重目录用绝对路径：GEN3C 仓库自带一个 checkpoints/ 目录（只有 README），setup_gen3c.sh 的 ln -sfn 会把链接建到
+# 它里面（checkpoints/checkpoints），导致找不到 model.pt（实测 2026-10-14）。不改 setup_gen3c.sh 以免环境包失效。
 (cd "$ATLAS_SRC/GEN3C" && CUDA_HOME=$GEN3C_ENV PATH=$GEN3C_ENV/bin:$PATH PYTHONPATH=. \
-   "$GEN3C_ENV/bin/python" "$HERE/tools/gen3c_run.py" --jobs "$S4/gen3c_jobs.json" --out "$S4/gen3c") \
+   "$GEN3C_ENV/bin/python" "$HERE/tools/gen3c_run.py" --jobs "$S4/gen3c_jobs.json" --out "$S4/gen3c" --checkpoint_dir "$ATLAS_WEIGHTS/gen3c/checkpoints") \
   || { log "GEN3C 失败，改用 --offload 重试一次（显存不够时）"; \
        (cd "$ATLAS_SRC/GEN3C" && CUDA_HOME=$GEN3C_ENV PATH=$GEN3C_ENV/bin:$PATH PYTHONPATH=. \
-          "$GEN3C_ENV/bin/python" "$HERE/tools/gen3c_run.py" --jobs "$S4/gen3c_jobs.json" --out "$S4/gen3c" --offload) \
+          "$GEN3C_ENV/bin/python" "$HERE/tools/gen3c_run.py" --jobs "$S4/gen3c_jobs.json" --out "$S4/gen3c" --checkpoint_dir "$ATLAS_WEIGHTS/gen3c/checkpoints" --offload) \
        || GEN3C_OK=0; }
 phase_end
 cp "$S4/gen3c/gen3c_timing.json" "$OUT/" 2>/dev/null || true
+fi
 
 # ---------------------------------------------------------------- 4. 4C4D
 phase_begin fourc4d_train
+# 4C4D 用的 torchmetrics 0.11.4 需要 pkg_resources，新版 setuptools 已移除 → 训练前补装（实测 2026-10-14；
+# 写在这里而不是 setup_4c4d.sh，改安装脚本会让环境包失效、需要重装）
+"$FOURC_ENV/bin/python" -c "import pkg_resources" 2>/dev/null || "$FOURC_ENV/bin/python" -m pip install -q "setuptools<80"
 FC=$S4/4c4d_${SEQ}.yaml
 "$FOURC_ENV/bin/python" - "$ATLAS_SRC/4C4D/configs/dynerf/flame_steak.yaml" "$FC" "$W/4c4d" "$S4/4c4d_model" "$ITERS" <<'PY'
 import sys
@@ -162,4 +175,5 @@ m["gen3c_timing"] = load("gen3c_timing.json")
 json.dump(m, open(o / "metrics.json", "w"), indent=2, ensure_ascii=False)
 print(json.dumps(m, ensure_ascii=False))
 PY
-[ $GEN3C_OK = 1 ] && [ $FOURC_OK = 1 ]
+# 4c4d-only 模式下 GEN3C 是有意跳过的，只按 4C4D 判断成败（2026-10-14 曾因此把成功的任务报成 failed）
+if [ "$MODE" = 4c4d-only ]; then [ $FOURC_OK = 1 ]; else [ $GEN3C_OK = 1 ] && [ $FOURC_OK = 1 ]; fi

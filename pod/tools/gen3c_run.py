@@ -103,4 +103,19 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # 报错后进程曾经挂住不退出（实测 2026-10-14：报 FileNotFoundError 后卡了 8 分钟），
+    # 推测是加载过程中起的后台线程。这里统一用 os._exit 强制结束，返回码照常
+    import os
+    import traceback
+    try:
+        main()
+    except SystemExit as e:
+        sys.stdout.flush()
+        os._exit(e.code if isinstance(e.code, int) else 1)
+    except BaseException:
+        traceback.print_exc()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(1)
+    sys.stdout.flush()
+    os._exit(0)

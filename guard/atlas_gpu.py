@@ -450,6 +450,25 @@ def runs_finished(pod, runs):
     return True, f"登记的任务已全部结束（{','.join(states)}），{min(ages) // 60} 分钟无新任务"
 
 
+FETCH_TIMEOUT = 300
+
+
+def fetch_runs(pod):
+    """关机前把 atlas-run 登记的任务结果（≤20MB 的小文件）拉回服务器 ~/runs/。
+    pod 关掉后 Global volume 只能再开 pod 才能读，所以必须在关之前拉（2026-10-14 会话中断，结果没拉回来就关了）。"""
+    runs = load_state(pod["id"]).get("stop_after_runs") or []
+    cmd = os.environ.get("ATLAS_GPU_FETCH_CMD") or \
+        f"{sys.executable} {Path(__file__).resolve().parent.parent / 'runner' / 'atlas_run.py'} --fetch"
+    for r in runs:
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", r):
+            continue
+        try:
+            res = subprocess.run(shlex.split(cmd) + [r], capture_output=True, text=True, timeout=FETCH_TIMEOUT)
+            log(f"FETCH {r}: rc={res.returncode}", also_print=False)
+        except subprocess.TimeoutExpired:
+            log(f"FETCH {r}: 超时", also_print=False)
+
+
 def stop_pod(pod, reason, dry_run=False, delete=False):
     if not pod["name"].startswith(PREFIX):  # 双保险
         raise GuardError(f"拒绝操作非 atlas- pod: {pod['name']}")
@@ -462,6 +481,7 @@ def stop_pod(pod, reason, dry_run=False, delete=False):
         out, why = ssh_run(pod, f"[ -x {PRE_STOP} ] && timeout {PRE_STOP_TIMEOUT} {PRE_STOP} || true",
                            timeout=PRE_STOP_TIMEOUT + 30)
         log(f"PRE_STOP {pod['id']} {pod['name']}: {why}", also_print=False)
+        fetch_runs(pod)
     pod_action(pod, action)
     log(f"{action.upper()} {pod['id']} {pod['name']}：{reason}")
     if delete:

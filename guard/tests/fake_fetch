@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# 假的 atlas-run --fetch：记录被拉取的 run
+echo "$*" >> "$FAKE_DIR/fetched"
+exit 0

@@ -12,7 +12,7 @@ trap 'kill $API_PID 2>/dev/null; rm -rf "$FAKE_DIR"' EXIT
 export ATLAS_RUNPOD_API="http://127.0.0.1:$PORT"
 export RUNPODCTL="$HERE/fake_runpodctl" ATLAS_GPU_SSH="$HERE/fake_ssh"
 export ATLAS_GPU_STATE="$FAKE_DIR/state" ATLAS_GPU_LOG="$FAKE_DIR/guard.log" ATLAS_GPU_CONFIG="$FAKE_DIR/config.json"
-export ATLAS_GPU_BALANCE_LOG="$FAKE_DIR/balance.log" ATLAS_GPU_KEYFILE="$FAKE_DIR/key" ATLAS_GPU_SSH_KEY="$FAKE_DIR/sshkey"
+export ATLAS_GPU_FETCH_CMD="$HERE/fake_fetch" ATLAS_GPU_BALANCE_LOG="$FAKE_DIR/balance.log" ATLAS_GPU_KEYFILE="$FAKE_DIR/key" ATLAS_GPU_SSH_KEY="$FAKE_DIR/sshkey"
 for i in $(seq 50); do curl -s -o /dev/null "$ATLAS_RUNPOD_API/" && break; sleep 0.1; done
 
 ago() { date -u -d "-$1 minutes" +%Y-%m-%dT%H:%M:%SZ; }
@@ -238,6 +238,13 @@ check "利用率 6% → 算忙、清空空闲计时"             0 "$G guard && 
 reset
 apipods "[]"
 check "巡检记录余额到 balance.log"                0 "$G guard && grep -q '50.0000 active_atlas_pods=0' $FAKE_DIR/balance.log"
+
+reset
+apipods "[$(pod p1 atlas-x RUNNING 60 80)]"
+state p1 '{"max_hours":6,"stop_after_runs":["r1","r2"]}'
+printf 'r1 done 900\nr2 done 700\n' > "$FAKE_DIR/runs_status"
+check "关机前先把登记任务的结果拉回服务器"         0 "$G guard && grep -q 'FETCH r1: rc=0' $FAKE_DIR/guard.log && grep -q 'FETCH r2: rc=0' $FAKE_DIR/guard.log && grep -q 'r1' $FAKE_DIR/fetched"
+check "拉取发生在 stop 之前"                       0 "awk '/FETCH r2/{f=NR} /STOP p1/{s=NR} END{exit !(f && s && f<s)}' $FAKE_DIR/guard.log"
 
 echo
 echo "通过 $PASS，失败 $FAIL"
