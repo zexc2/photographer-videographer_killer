@@ -12,6 +12,11 @@ source "$(dirname "$(readlink -f "$0")")/lib/common.sh"
 NAME=gen3c
 GEN3C_REF=${GEN3C_REF:-db2ffe1}       # 2026-06-15 main，核实过 INSTALL.md
 TE_VERSION=1.12.0
+# apex 固定到 25.09（实测 2026-10-14）：
+#   - master（2025-11 起）用了 torch 2.6 不支持的 list[int] 注解（custom_op）→ import megatron.core 失败
+#   - 24.10（官方 Docker 基础镜像的版本）还在用 .type()，和 torch 2.6 头文件不兼容 → 编译失败
+#   - 25.09 两个问题都没有：List[int] + .scalar_type()
+APEX_REF=25.09
 START=$SECONDS
 busy_start
 apt_ensure git curl rsync zstd build-essential
@@ -45,13 +50,18 @@ else
     log "编译 transformer-engine $TE_VERSION（较慢）"
     $PIP install -q "transformer-engine[pytorch]==$TE_VERSION"
     log "编译 apex（较慢）"
-    [ -d "$ATLAS_SRC/apex/.git" ] || git clone -q https://github.com/NVIDIA/apex "$ATLAS_SRC/apex"
-    git -C "$ATLAS_SRC/apex" rev-parse HEAD > "$P/.apex_commit"
+    repo_ensure https://github.com/NVIDIA/apex.git apex "$APEX_REF" > "$P/.apex_commit"
     $PIP install -q --disable-pip-version-check --no-cache-dir --no-build-isolation \
       --config-settings "--build-option=--cpp_ext" --config-settings "--build-option=--cuda_ext" "$ATLAS_SRC/apex"
     $PIP install -q git+https://github.com/microsoft/MoGe.git
+    # MoGe 会把 huggingface-hub 升到 2.x，破坏 transformers 4.49（实测 2026-10-13）→ 再按官方 requirements 恢复所有固定版本
+    $PIP install -q -r requirements.txt
     log "官方环境自检 scripts/test_environment.py"
-    PYTHONPATH=$SRC python scripts/test_environment.py
+    # 官方自检脚本遇到导入失败也返回 0，所以检查输出里有没有 [ERROR]，避免把坏环境打包
+    PYTHONPATH=$SRC python scripts/test_environment.py 2>&1 | tee "$ATLAS_LOGS/gen3c-envtest.log"
+    if grep -q 'ERROR' "$ATLAS_LOGS/gen3c-envtest.log"; then echo "GEN3C 环境自检失败" >&2; exit 1; fi
+    # MoGe 3.x 要求 numpy>=2，和 GEN3C 固定的 numpy 1.26 冲突；MoGe 只用于单张图片模式，我们走视频 + ViPE，所以不在必检列表里
+    python -c "import transformers, megatron.core, transformer_engine, apex; print('gen3c imports ok')"
   )
   env_pack "$NAME" "$KEY"
 fi

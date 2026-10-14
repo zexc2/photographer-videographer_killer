@@ -174,6 +174,12 @@ apipods "[$(pod p1 atlas-x RUNNING 90)]"
 state p1 "{\"max_hours\":6,\"idle_since\":\"$(ago 30)\"}"
 check "开机后持续 30 分钟探测不到 → stop"         0 "$G guard && called 'API POST /v2/pods/p1/action'"
 reset
+nossh="{\"id\":\"p1\",\"name\":\"atlas-x\",\"status\":\"RUNNING\",\"startedAt\":\"$(ago 60)\",\"cost\":1.79,\"runtime\":{\"gpus\":[{\"util\":0}]}}"
+apipods "[$nossh]"
+state p1 "{\"max_hours\":6,\"idle_since\":\"$(ago 40)\",\"ssh_cmd\":\"ssh root@pod.example.invalid -p 1\"}"
+echo 0 > "$FAKE_DIR/util"; echo 30 > "$FAKE_DIR/busy"
+check "API 缺 SSH 信息时用缓存的 SSH 命令，busy 仍生效" 0 "$G guard && ! called '/action' && grep -q '\"idle_since\": null' $FAKE_DIR/state/p1.json"
+reset
 apipods "[$(pod p9 atlas-manual RUNNING 400 90)]"
 check "没走 gpu-up 的 atlas- pod 也按 6h 管"      0 "$G guard && called 'API POST /v2/pods/p9/action'"
 reset

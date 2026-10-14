@@ -30,10 +30,17 @@ if ! env_restore 4c4d "$KEY"; then
   conda_ensure
   P=$ATLAS_ENVS/4c4d; rm -rf "$P"
   log "创建 4c4d 环境（py3.10 + CUDA 12.4 toolkit + colmap）"
-  "$CONDA_ROOT/bin/mamba" create -q -p "$P" -c conda-forge -c nvidia/label/cuda-12.4.1 \
-    python=3.10 pip cmake ninja gcc=12 gxx=12 cuda-toolkit=12.4 colmap plyfile=0.8.1 >/dev/null
+  # 必须固定 cuda-version=12.4：不固定时 conda-forge 会混进 CUDA 13.x 的 cudart，链接扩展时报 cannot find -lcudart（实测 2026-10-14）
+  "$CONDA_ROOT/bin/mamba" create -q -p "$P" -c conda-forge \
+    python=3.10 pip cmake ninja gcc=12 gxx=12 cuda-version=12.4 "cuda-toolkit=12.4.*" colmap plyfile=0.8.1 >/dev/null
+  "$P/bin/nvcc" --version | grep -q 'release 12.4' || die "nvcc 不是 12.4"
+  ls "$P"/lib/libcudart.so.12* >/dev/null 2>&1 || ls "$P"/targets/x86_64-linux/lib/libcudart.so.12* >/dev/null || die "缺少 CUDA 12 cudart"
   (
     export PATH=$P/bin:$PATH CUDA_HOME=$P
+    # conda-forge 的 CUDA 头文件和库在 targets/x86_64-linux/ 下；nvcc 能找到，但 g++ 编译 .cpp 时找不到
+    # cuda_runtime_api.h（pointops2 实测报错，2026-10-14），所以显式加进搜索路径
+    export CPATH=$P/targets/x86_64-linux/include:${CPATH:-}
+    export LIBRARY_PATH=$P/targets/x86_64-linux/lib:${LIBRARY_PATH:-}
     PIP="$P/bin/python -m pip"
     $PIP install -q $TORCH_PIP
     $PIP install -q torch_scatter -f https://data.pyg.org/whl/torch-2.4.0+cu124.html

@@ -115,8 +115,9 @@ def start(a):
             "cost_per_hr": pod.get("cost"), "started": g.iso(g.now())}
     (local / "run.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False))
     args = " ".join(shlex.quote(x) for x in a.args)
-    ssh(pod, f"cd {rd} && nohup bash {POD_ROOT}/repo/pod/run_task.sh {rd} {a.task} {args} > {rd}/run.log 2>&1 < /dev/null & "
-             f"echo $! > {rd}/pid")
+    # setsid：任务放进独立会话，SSH 断开不会收到 SIGHUP，启动命令也能立即返回（实测只用 nohup 时 ssh 会挂住）
+    ssh(pod, f"cd {rd} && setsid nohup bash {POD_ROOT}/repo/pod/run_task.sh {rd} {a.task} {args} > {rd}/run.log 2>&1 < /dev/null & "
+             f"echo $! > {rd}/pid", timeout=120)
     print(f"已在 pod 上启动。日志：{rd}/run.log")
     if a.detach:
         print(f"跟踪：atlas-run --attach {run_id}")
@@ -171,6 +172,7 @@ def fetch(run_id, pod=None):
 
 
 def main():
+    sys.stdout.reconfigure(line_buffering=True)  # 输出重定向到文件时也逐行刷新，方便跟踪
     ap = argparse.ArgumentParser(prog="atlas-run", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--input", help="推送到 pod 的任务输入目录（小文件）")
     ap.add_argument("--name", help="run 名字后缀")

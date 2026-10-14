@@ -148,10 +148,11 @@ hf_token_load() {
 }
 
 # ---------------------------------------------------------------- 写 Global volume
-# 只用于冷数据。--inplace：不依赖原子 rename；--no-perms 等：Global volume 没有权限位。
+# 只用于冷数据。--inplace：不依赖原子 rename；--no-perms 等：Global volume 没有权限位；
+# Global volume 不能设置文件时间（实测 rsync -t 报 Operation not permitted），所以不带 -t，用 --size-only 判断是否需要重传。
 vol_sync() {  # vol_sync <本地源/> <volume 目标/>
   mkdir -p "$2"
-  rsync -rt --inplace --no-perms --no-owner --no-group --partial "$1" "$2"
+  rsync -r --inplace --size-only --no-perms --no-owner --no-group --no-times --omit-dir-times --partial "$1" "$2"
 }
 
 weights_ready() { [ -f "$ATLAS_WEIGHTS/$1/.complete" ]; }

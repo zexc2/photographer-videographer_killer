@@ -27,7 +27,7 @@ d = {
   "container_disk_free_gb": round(shutil.disk_usage("$ATLAS_LOCAL").free / 1e9, 1),
   "global_volume_MBps": {"write": $vw, "read": $vr}, "container_disk_MBps": {"write": $lw, "read": $lr},
   "global_volume_small_files_per_s": $small,
-  "public_key_env_set": bool(__import__("os").environ.get("PUBLIC_KEY")),
+  "public_key_in_pid1_env": b"PUBLIC_KEY=" in open("/proc/1/environ", "rb").read(),
 }
 json.dump(d, open(sys.argv[1], "w"), indent=2, ensure_ascii=False)
 print(json.dumps(d, indent=2, ensure_ascii=False))

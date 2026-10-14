@@ -656,6 +656,11 @@ def cmd_guard(a):
             st = {"name": p["name"], "max_hours": MAX_HOURS, "created_at": iso(now()), "idle_since": None,
                   "note": "非 gpu-up 创建，按默认 6h 管理"}
             log(f"WARN {p['id']} {p['name']} 没有 gpu-up 记录，按 {MAX_HOURS:g}h 上限管理")
+        # API 偶尔不返回 ssh 信息（实测 2026-10-14），记住上一次拿到的命令作为备用，避免误判空闲
+        if p.get("ssh"):
+            st["ssh_cmd"] = p["ssh"]
+        elif st.get("ssh_cmd"):
+            p["ssh"] = st["ssh_cmd"]
         start = run_start(p, st)
         elapsed = (now() - start).total_seconds() if start else 0
         max_h = min(float(st.get("max_hours") or MAX_HOURS), MAX_HOURS)

@@ -29,7 +29,9 @@ else
   rm -rf "$P"
   log "创建 vipe 环境（py3.11 + CUDA 12.8 nvcc + eigen）"
   "$CONDA_ROOT/bin/mamba" create -q -p "$P" -c nvidia/label/cuda-12.8.0 -c conda-forge \
-    python=3.11 pip cuda-nvcc eigen zlib libcusparse-dev libcublas-dev libcusolver-dev ninja >/dev/null
+    python=3.11 pip cuda-version=12.8 "cuda-nvcc=12.8.*" eigen zlib libcusparse-dev libcublas-dev libcusolver-dev ninja >/dev/null
+  # 必须固定 cuda-version=12.8：不固定时 conda-forge 会选 nvcc 13.x，和 torch cu128 不匹配导致编译失败（实测 2026-10-13）
+  "$P/bin/nvcc" --version | grep -q 'release 12.8' || die "nvcc 不是 12.8"
   (
     export PATH=$P/bin:$PATH CUDA_HOME=$P CONDA_PREFIX=$P
     export USE_SYSTEM_EIGEN=1 CPATH=$P/include/eigen3:$P/include:${CPATH:-}

@@ -31,11 +31,11 @@
 | 需要编译 | transformer-engine 1.12、apex | vipe_ext | simple-knn、pointops2、fused-ssim、diff-gaussian-rasterization | 不需要（curope 可选，已跳过） |
 | 权重 | 约 76 GB：GEN3C-Cosmos-7B、Cosmos-Tokenize1、T5-11B（跳过了 45 GB 用不到的 TF 权重） | 约 3–5 GB，首次运行自动下载，打成 tar 保存 | 不需要预训练权重 | 2.75 GB |
 | HF token / 同意许可 | 不需要（三个仓库都没有 gating） | 不需要 | 不需要 | 不需要 |
-| 首次安装（估算） | 40–70 分钟 + 下载 76 GB | 15–25 分钟 | 4C4D 与 MASt3R 合计 20–35 分钟 | （含在左边） |
-| 以后开机（估算） | 解压 3–8 分钟 | 1–3 分钟 | 2–5 分钟 | （含在左边） |
-| 环境大小（估算） | 15–20 GB | 8–10 GB | 8–10 GB | 6–8 GB |
+| 首次安装（**实测**，A100 SXM） | 环境 19 分钟（含编译 apex 约 15 分钟）+ 权重下载并存入 Global volume 约 5 分钟 | 25 分钟（其中测试视频约 18 分钟，GeoCalib 就用了 11 分钟） | 4C4D 与 MASt3R 合计 13 分钟 | （含在左边） |
+| 环境大小（**实测**） | 13 GB，压缩后 5.0 GB | 12 GB，压缩后 4.8 GB；模型缓存 4 GB | 13 GB，压缩后 5.2 GB | 压缩后 2.4 GB；权重 2.6 GB |
+| 以后开机恢复（估算，按 Global volume 读取 75 MB/s 计） | 约 2–3 分钟 | 约 2–3 分钟 | 约 2–3 分钟 | 约 1 分钟 |
 
-**估算值第一次真正安装后会用实测替换。** 每次运行都会把 `{耗时, 环境大小, 权重大小, GPU}` 追加到 `$ATLAS_VOL/setup-reports/<模型>.jsonl`。
+安装耗时和大小已在 2026-10-14 第一次开 pod 时实测；恢复耗时等下次开 pod 再实测。 每次运行都会把 `{耗时, 环境大小, 权重大小, GPU}` 追加到 `$ATLAS_VOL/setup-reports/<模型>.jsonl`。
 
 ## 对官方流程的改动（以及原因）
 
@@ -50,7 +50,12 @@
 
 ## 已知限制
 
-- **以上脚本还没有在真实 pod 上跑过**（服务器上不能跑模型）。第一次开 pod 时依次运行 `selftest` 和 `setup`，再根据实际情况修正。
+- 2026-10-14 第一次开 pod 实测，修了以下问题：
+  - GEN3C：MoGe 把 huggingface-hub 升到 2.x，破坏了 transformers → 装完 MoGe 后按官方 requirements 重新固定版本。官方自检脚本出错时仍返回 0 → 改成检查输出里的 ERROR。apex master 和 torch 2.6 不兼容，24.10 又太旧 → 固定到 **25.09**
+  - ViPE / 4C4D：conda-forge 会混进 CUDA 13.x → 固定 `cuda-version`；4C4D 编译 `.cpp` 时找不到 CUDA 头文件 → 把 `targets/x86_64-linux/include` 加进 CPATH
+  - Global volume 不能设置文件时间 → `vol_sync` 不再用 `rsync -t`
+- MoGe 3.x 要求 numpy≥2，和 GEN3C 固定的 numpy 1.26 冲突。它只用于单张图片模式，我们用的是视频 + ViPE，所以不影响
+- ViPE 的 GeoCalib（估计内参）在测试视频上用了 11 分钟，而且主要在 CPU 上跑。阶段 3/4 要查清原因，也可以在已知内参时跳过这一步（Panoptic 有标定数据）
 - **GEN3C 的命令行只支持预设运镜**：left、right、up、down、zoom_in、zoom_out、clockwise、counterclockwise，可以调距离和朝向模式。阶段 5 需要的自定义关键帧轨迹，要改 `generate_camera_trajectory` 或走官方 GUI 的 server 接口。4C4D 的 `render.py` 同样只有 ellipse、interpolate、arc 三种轨迹，改 `generate_path` 比较简单。
 
 ## 许可汇总（详见根目录 README）
