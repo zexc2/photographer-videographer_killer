@@ -17,7 +17,7 @@ ERA MOMENT 做活动摄影摄像。美国 8 小时活动摄像师报价很少低
 | 1 | GPU 成本护栏（开/关/巡检 RunPod pod），见 [guard/](guard/README.md) | ✅ |
 | 2 | pod 环境脚本（GEN3C / ViPE / 4C4D），见 [pod/](pod/README.md) | ✅ 脚本完成，待上 pod 实测 |
 | 3 | CMU Panoptic 数据准备，见 [docs/stage3-data.md](docs/stage3-data.md) | 🔧 脚本完成，待上 pod 运行 |
-| 4 | GEN3C vs 4C4D 基线对比（效果 / 耗时 / 成本） | ⏳ |
+| 4 | GEN3C vs 4C4D 基线对比（效果 / 耗时 / 成本），方法见 [docs/stage4-method.md](docs/stage4-method.md) | 🔧 代码完成，待上 pod |
 | 5 | Flask 前端：上传 → 3D 预览 → 设定运镜 → 生成 | ⏳ |
 | 6 | 接入 360 转透视工具 | ⏳ |
 

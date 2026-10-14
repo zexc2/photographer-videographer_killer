@@ -68,8 +68,15 @@ def load_calibration(seq, endpoint, seq_root):
     cams = {}
     for c in json.load(open(p))["cameras"]:
         if c["type"] == "hd" and c["panel"] == 0:
+            K = np.array(c["K"], dtype=np.float64)
+            w, h = c["resolution"]
+            # 去畸变时同时把主点移到图像正中心：4C4D 读 PINHOLE 时只用焦距、默认主点居中，
+            # Panoptic 原始主点偏离中心最多约 18 像素，不处理会让每个机位都有系统性错位（2026-10-14 发现）
+            K_new = K.copy()
+            K_new[0, 2], K_new[1, 2] = w / 2.0, h / 2.0
             cams[c["node"]] = {
-                "K": np.array(c["K"], dtype=np.float64),
+                "K": K_new,
+                "K_orig": K,
                 "dist": np.array(c["distCoef"], dtype=np.float64),
                 "R": np.array(c["R"], dtype=np.float64),
                 "t": np.array(c["t"], dtype=np.float64).reshape(3) / 100.0,  # 厘米 → 米
@@ -106,9 +113,9 @@ def fetch_frames(seq, cam, cfg, seq_root, raw_dir, n, start_frame):
 
 
 def undistort_cam(cam, c, raw_dir, img_dir, n):
-    K, dist = c["K"], c["dist"]
     w, h = c["size"]
-    m1, m2 = cv2.initUndistortRectifyMap(K, dist, None, K, (w, h), cv2.CV_32FC1)
+    # 原始内参 + 畸变 → 主点居中的新针孔相机
+    m1, m2 = cv2.initUndistortRectifyMap(c["K_orig"], c["dist"], None, c["K"], (w, h), cv2.CV_32FC1)
     for i in range(n):
         dst = img_dir / f"cam{cam:02d}_{i:04d}.png"
         if dst.exists():
@@ -122,7 +129,7 @@ def undistort_cam(cam, c, raw_dir, img_dir, n):
 def write_colmap(cams, use, sparse_dir):
     sparse_dir.mkdir(parents=True, exist_ok=True)
     with open(sparse_dir / "cameras.txt", "w") as f:
-        f.write("# CAMERA_ID MODEL WIDTH HEIGHT fx fy cx cy（Panoptic 标定，已去畸变）\n")
+        f.write("# CAMERA_ID MODEL WIDTH HEIGHT fx fy cx cy（Panoptic 标定，已去畸变、主点已移到中心）\n")
         for i, cam in enumerate(use, 1):
             K = cams[cam]["K"]
             w, h = cams[cam]["size"]
@@ -220,7 +227,8 @@ def main():
         "start_frame": start_frame, "units": "meters",
         "train_cams": train, "eval_cam": ev, "gen3c_input_cam": g_in,
         "fourc4d_training_view": ",".join(str(c) for c in sorted(train)),
-        "cameras": {f"cam{c:02d}": {"K": cams[c]["K"].tolist(), "R": cams[c]["R"].tolist(),
+        "cameras": {f"cam{c:02d}": {"K": cams[c]["K"].tolist(), "K_orig": cams[c]["K_orig"].tolist(),
+                                    "R": cams[c]["R"].tolist(),
                                     "t": cams[c]["t"].tolist(), "center": center(cams[c]).tolist(),
                                     "size": list(cams[c]["size"])} for c in use},
         "eval_from_gen3c_input": {"T": T_rel.tolist(), "baseline_m": round(baseline, 3),
