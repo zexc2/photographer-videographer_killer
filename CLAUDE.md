@@ -87,5 +87,6 @@
 - 2026-10-13（待 Joey 决定）：GEN3C 模型卡写明关闭安全护栏会终止 NVIDIA Open Model License，官方推理脚本却强制关闭护栏。第一阶段研究验证照官方脚本跑；商用前要决定怎么处理。4C4D / MASt3R / CMU Panoptic 均为非商业许可。
 - 2026-10-13：Global volume 已建好（Location: Any）。脚本**只按 volume ID 识别**（存在 ~/.config/atlas-gpu/config.json 的 global_volume_id，不进仓库），名字 "photographer/videographer_killer" 含斜杠，只用于显示，不按名字匹配。
 - 2026-10-13：gpu-up 开 pod 前检查账户余额（v2 API 没有余额接口，用 runpodctl user 读取）：余额 < $15 或读不到时拒绝开 pod，提示 Joey 充值，防止余额归零导致 Global volume 被删除。
+- 2026-10-14：【Joey 决定】余额下限从 $15 改为 **$3**：余额 < $3 或读不到时拒绝开 pod；预计跑满时长后会低于 $3 时只提醒、不拒绝。
 - 2026-10-13：对比报告（阶段 4）里每个方案都要单独标注**"能否商用"及原因**（模型代码、权重、预处理依赖、训练数据各自的许可）。如果 4C4D 效果最好，额外调研**可商用的稀疏视角 4DGS 替代实现**，列出仓库和许可。
 

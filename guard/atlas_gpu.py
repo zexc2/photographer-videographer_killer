@@ -8,7 +8,7 @@
   gpu-guard   巡检（cron 每 10 分钟）：超时 → stop；GPU 连续 30 分钟空闲 → stop
 
 后端
-- 余额：v2 API 没有余额接口，用 runpodctl user 读取；余额 < $15 或读不到时拒绝开 pod。
+- 余额：v2 API 没有余额接口，用 runpodctl user 读取；余额 < $3 或读不到时拒绝开 pod（Joey 2026-10-14 决定，原为 $15）。
 - 主路径：RunPod REST API v2（https://api.runpod.io/v2）。Global volume 挂载、GPU 实时利用率、
   SSH 信息都只有 v2 提供。API key 用单独建的「限权 key」，存在 ~/.config/atlas-gpu/runpod_api_key，
   只在发请求时读进内存，绝不打印、不写日志。
@@ -43,7 +43,7 @@ SSH_KEY = Path(os.environ.get("ATLAS_GPU_SSH_KEY", HOME / ".ssh/atlas_runpod"))
 PREFIX = "atlas-"
 # Global volume 只按 ID 识别（配置文件 global_volume_id），名字只用于显示——名字可能含斜杠、也不保证唯一
 VOLUME_LABEL_DEFAULT = "atlas_data"
-MIN_BALANCE = 15.0  # 余额低于这个数拒绝开 pod：余额归零 15 天后 Global volume 会被永久删除
+MIN_BALANCE = 3.0  # Joey 2026-10-14 决定（原为 $15）。 余额低于这个数拒绝开 pod：余额归零 15 天后 Global volume 会被永久删除
 # Global volume 在 pod 里的挂载路径：创建 pod 时显式指定，并作为环境变量 ATLAS_VOL 传进 pod。
 # pod 上所有脚本只认 $ATLAS_VOL，不写死 /workspace（同时挂 network volume 时默认会变成 /workspace-global）。
 VOL_MOUNT = os.environ.get("ATLAS_VOL_MOUNT", "/workspace")

@@ -19,7 +19,7 @@
 - **数量**：同时最多 1 个处于计费状态的 atlas- pod（PROVISIONING / STARTING / RUNNING 都算）。
 - **存储**：挂载 Global volume `atlas_data`。pod 内的路径由变量 `ATLAS_VOL_MOUNT` 决定（默认 `/workspace`），并作为环境变量 `$ATLAS_VOL` 传进 pod；容器盘根目录是 `$ATLAS_LOCAL=/opt/atlas`，默认 200 GB。详见 [docs/storage-and-env.md](../docs/storage-and-env.md)。
 - **时长**：`--hours` 默认 6，最大 6；到点由巡检 stop。
-- **余额**：开 pod 前用 `runpodctl user` 读取账户余额（v2 API 没有余额接口）；**余额 < $15 或读不到时拒绝开 pod**，因为余额归零 15 天后 Global volume 会被永久删除。跑满时长后余额会低于 $15 时，会给出提醒。`gpu-status` 也会显示余额。
+- **余额**：开 pod 前用 `runpodctl user` 读取账户余额（v2 API 没有余额接口）；**余额 < $3 或读不到时拒绝开 pod**（2026-10-14 Joey 决定，原为 $15），因为余额归零 15 天后 Global volume 会被永久删除。跑满时长后余额会低于 $3 时，会给出提醒。`gpu-status` 也会显示余额。
 
 ## API key
 
@@ -73,7 +73,7 @@ pod 的 SSH 公钥通过环境变量 `PUBLIC_KEY` 注入：包括本服务器专
 ## 测试
 
 ```bash
-guard/tests/run_tests.sh   # 假 API v2 + 假 runpodctl / ssh，61 个用例，不访问真实账号
+guard/tests/run_tests.sh   # 假 API v2 + 假 runpodctl / ssh，64 个用例，不访问真实账号
 gpu-up --dry-run           # 真实账号上只读预览，不开 pod
 ```
 
