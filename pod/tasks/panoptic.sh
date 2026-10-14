@@ -37,13 +37,39 @@ for SEQ in "${SEQS[@]}"; do
     PREP=$((SECONDS - t))
 
     t=$SECONDS
-    PYTHONPATH=$ATLAS_SRC/mast3r "$PY" "$HERE/tools/mast3r_posed_points.py" --data "$W/4c4d" --cams "$TRAIN" \
-      --weights "$MAST3R_CK" --preview "$W/previews"
+    if [ -s "$W/4c4d/sparse/0/points3D.txt" ] && [ -f "$W/4c4d/points3D_stats.json" ]; then
+      log "点云已存在，跳过"
+    else
+      PYTHONPATH=$ATLAS_SRC/mast3r "$PY" "$HERE/tools/mast3r_posed_points.py" --data "$W/4c4d" --cams "$TRAIN" \
+        --weights "$MAST3R_CK" --preview "$W/previews"
+    fi
     PTS=$((SECONDS - t))
 
     # GEN3C 的输入：单目视频 → ViPE 估计深度 / 位姿 / 内参（模拟只有一台手机、没有标定的情况）
     t=$SECONDS
-    (cd "$W/gen3c" && "$ATLAS_ENVS/vipe/bin/vipe" infer input.mp4 -o vipe -v)
+    # conda-pack 恢复后，bin/vipe 的 shebang 是 "#!/usr/bin/env python"，必须把环境放到 PATH 最前面，
+    # 否则会用到系统 python 而报 No module named 'vipe'（实测 2026-10-14）
+    # SETUPTOOLS_USE_DISTUTILS=stdlib：ViPE 环境里 pip 和 conda 两份 setuptools 的文件经 conda-pack 后混在一起，
+    # torch.utils.cpp_extension 导入 setuptools 时报 No module named 'distutils.compilers.errors'（实测 2026-10-14）。
+    # 改用 Python 3.11 自带的 distutils 绕开；根本修复见 PROGRESS 待办（下次重建环境时用 conda 装 setuptools）
+    # 不加 -v：-v 会启动 rerun 可视化查看器，pod 上没有显示器，ViPE 处理完后进程卡住不退出（实测卡了 20 分钟）。
+    # 保险：日志里出现 Finished 且位姿文件已写出后，主动结束进程。
+    if [ -f "$W/gen3c/vipe/pose/input.npz" ]; then
+      log "ViPE 结果已存在，跳过"
+    else
+      (cd "$W/gen3c" && PATH=$ATLAS_ENVS/vipe/bin:$PATH SETUPTOOLS_USE_DISTUTILS=stdlib \
+        vipe infer input.mp4 -o vipe > vipe.log 2>&1) &
+      vp=$!
+      while kill -0 $vp 2>/dev/null; do
+        if grep -q "vipe - INFO - Finished$" "$W/gen3c/vipe.log" 2>/dev/null && [ -f "$W/gen3c/vipe/pose/input.npz" ]; then
+          sleep 20; pkill -f "vipe infer input.mp4" || true; break
+        fi
+        sleep 10
+      done
+      wait $vp || true
+      tail -3 "$W/gen3c/vipe.log" >&2
+      [ -f "$W/gen3c/vipe/pose/input.npz" ] || { echo "ViPE 没有输出位姿" >&2; exit 1; }
+    fi
     VIPE=$((SECONDS - t))
     # ViPE 估计的内参 vs Panoptic 真实标定
     "$ATLAS_ENVS/vipe/bin/python" - "$W" <<'PY' > "$W/vipe_intrinsics.json"

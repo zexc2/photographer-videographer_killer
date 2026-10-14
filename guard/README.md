@@ -46,11 +46,17 @@ Global volume 只能通过 **RunPod REST API v2** 挂载，runpodctl 2.15 不支
 
 ## 巡检逻辑（gpu-guard）
 
+0. **任务结束自动关机**（2026-10-14 新增）：
+   - `atlas-run` 启动任务时把 run ID 登记到护栏的状态文件里。
+   - 巡检发现登记的任务都已结束（done 或 failed），而且最后一个结束已满 5 分钟（留时间给紧接着的下一个任务），就先执行 pre_stop，再 stop。
+   - 这样关 pod 不依赖 Claude 的会话还在不在。2026-10-14 会话中断，任务跑完后 pod 空转了约 35 分钟才被时长上限关掉，就是这个原因。
+   - 不想自动关就用 `atlas-run --keep-alive`。
+
 1. **超时**：本次运行时长 ≥ 设定上限 → stop。这一步只依赖 pod 列表，不需要 SSH；API 故障时自动改用 runpodctl。所以最坏情况下 pod 也只会跑满 6 小时。
 2. **空闲**：
-   - 先看 API v2 返回的 GPU 实时利用率 `runtime.gpus[].util`。大于 0 就算忙，不用 SSH。
+   - 先看 API v2 返回的 GPU 实时利用率 `runtime.gpus[].util`。**≥ 5%** 就算忙，不用 SSH。阈值原来是 > 0，但残留进程会报 1–2%，把空闲计时清零，2026-10-14 实测因此没能按空闲关机。
    - 为 0 或拿不到时，再 SSH 到 pod 复核：`nvidia-smi` 在 5 秒内采样 5 次取最大值，同时检查 `$ATLAS_LOCAL/.atlas_busy`。这个标记 15 分钟内被 touch 过就不算空闲，因为下载数据、解压环境、CPU 预处理时 GPU 利用率本来就是 0。
-   - **连续 ≥ 30 分钟**为 0 → stop。
+   - **连续 ≥ 30 分钟**低于 5% → stop。
    - 什么都测不到时：开机后 30 分钟内不计入空闲；之后按空闲计时（连不上的 pod 一样在花钱）。
 3. **stop 前先同步**：容器盘在 stop 后会清空，所以 stop 前会尽力 SSH 执行一次 `$ATLAS_LOCAL/bin/pre_stop`（由阶段 2 的任务执行器提供，最多 10 分钟），把结果同步回 Global volume。失败了也照样 stop。
 4. 没有通过 gpu-up 开的 atlas- pod 同样受管，按 6 小时上限处理。
@@ -73,7 +79,7 @@ pod 的 SSH 公钥通过环境变量 `PUBLIC_KEY` 注入：包括本服务器专
 ## 测试
 
 ```bash
-guard/tests/run_tests.sh   # 假 API v2 + 假 runpodctl / ssh，64 个用例，不访问真实账号
+guard/tests/run_tests.sh   # 假 API v2 + 假 runpodctl / ssh，74 个用例，不访问真实账号
 gpu-up --dry-run           # 真实账号上只读预览，不开 pod
 ```
 

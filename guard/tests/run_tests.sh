@@ -19,7 +19,7 @@ ago() { date -u -d "-$1 minutes" +%Y-%m-%dT%H:%M:%SZ; }
 key_on()  { printf 'testkey\n' > "$FAKE_DIR/key"; chmod 600 "$FAKE_DIR/key"; }
 key_off() { rm -f "$FAKE_DIR/key"; }
 reset() {
-  rm -rf "$FAKE_DIR"/{state,calls.log,guard.log,util,busy,api_fail,create_fail,api_created.json,user_fail}
+  rm -rf "$FAKE_DIR"/{state,calls.log,guard.log,util,busy,api_fail,create_fail,api_created.json,user_fail,runs_status}
   key_on; touch "$FAKE_DIR/sshkey"; echo 'ssh-ed25519 AAAAtest atlas' > "$FAKE_DIR/sshkey.pub"
   echo '[]' > "$FAKE_DIR/api_pods.json"; echo '[]' > "$FAKE_DIR/pods.json"
   echo '[{"id":"vol_test123","name":"photographer/videographer_killer"},{"id":"vol_other99","name":"atlas_data"}]' > "$FAKE_DIR/api_gv.json"
@@ -195,6 +195,45 @@ check "已停止的 pod 不重复 stop"                   0 "$G guard && ! calle
 reset; touch "$FAKE_DIR/api_fail"
 ctlpods "[{\"id\":\"p1\",\"name\":\"atlas-x\",\"desiredStatus\":\"RUNNING\",\"lastStartedAt\":\"$(ago 400)\"},{\"id\":\"other1\",\"name\":\"eramoment_find_attendee_tool\",\"desiredStatus\":\"RUNNING\",\"lastStartedAt\":\"$(ago 999)\"}]"
 check "API 故障时巡检退回 runpodctl，超时照样 stop" 0 "$G guard && called 'pod stop p1' && ! called 'pod stop other1'"
+
+echo "== 任务结束自动关机 / 空闲阈值"
+reset
+apipods "[$(pod p1 atlas-x RUNNING 60 80)]"
+state p1 '{"max_hours":6,"stop_after_runs":["r1"]}'
+echo "r1 running 0" > "$FAKE_DIR/runs_status"
+check "登记的任务还在跑 → 不关"                    0 "$G guard && ! called '/action'"
+echo "r1 done 600" > "$FAKE_DIR/runs_status"
+check "登记的任务结束 10 分钟 → 自动关"            0 "$G guard && called 'API POST /v2/pods/p1/action' && grep -q '已全部结束' $FAKE_DIR/guard.log"
+check "自动关之前执行了 pre_stop"                  0 "grep -q 'PRE_STOP p1' $FAKE_DIR/guard.log"
+reset
+apipods "[$(pod p1 atlas-x RUNNING 60 80)]"
+state p1 '{"max_hours":6,"stop_after_runs":["r1"]}'
+echo "r1 done 60" > "$FAKE_DIR/runs_status"
+check "任务刚结束 1 分钟（宽限期内）→ 不关"         0 "$G guard && ! called '/action'"
+state p1 '{"max_hours":6,"stop_after_runs":["r1","r2"]}'
+printf 'r1 done 900\nr2 running 0\n' > "$FAKE_DIR/runs_status"
+check "一个结束、一个还在跑 → 不关"                0 "$G guard && ! called '/action'"
+printf 'r1 done 900\nr2 failed 700\n' > "$FAKE_DIR/runs_status"
+check "失败的任务也算结束 → 关"                    0 "$G guard && called 'API POST /v2/pods/p1/action'"
+reset
+apipods "[$(pod p1 atlas-x RUNNING 60 80)]"
+state p1 '{"max_hours":6,"stop_after_runs":[]}'
+echo "r1 done 9999" > "$FAKE_DIR/runs_status"
+check "没有登记任务（--keep-alive）→ 不按任务关"    0 "$G guard && ! called '/action'"
+reset
+apipods "[$(pod p1 atlas-x RUNNING 60 2)]"
+state p1 "{\"max_hours\":6,\"idle_since\":\"$(ago 30)\"}"
+echo 2 > "$FAKE_DIR/util"
+check "利用率 2%（低于 5%）连续 30 分钟 → 关"       0 "$G guard && called 'API POST /v2/pods/p1/action'"
+reset
+apipods "[$(pod p1 atlas-x RUNNING 60 2)]"
+state p1 "{\"max_hours\":6,\"idle_since\":\"$(ago 30)\"}"
+echo 2 > "$FAKE_DIR/util"; echo 30 > "$FAKE_DIR/busy"
+check "利用率 2% 但 busy 新鲜 → 不关"              0 "$G guard && ! called '/action'"
+reset
+apipods "[$(pod p1 atlas-x RUNNING 60 6)]"
+state p1 "{\"max_hours\":6,\"idle_since\":\"$(ago 40)\"}"
+check "利用率 6% → 算忙、清空空闲计时"             0 "$G guard && ! called '/action' && grep -q '\"idle_since\": null' $FAKE_DIR/state/p1.json"
 
 echo
 echo "通过 $PASS，失败 $FAIL"

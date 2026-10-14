@@ -115,6 +115,17 @@ def start(a):
             "cost_per_hr": pod.get("cost"), "started": g.iso(g.now())}
     (local / "run.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False))
     args = " ".join(shlex.quote(x) for x in a.args)
+    # 登记给护栏：这个任务结束后（留 5 分钟宽限）由 cron 巡检自动 stop pod，不依赖本会话还在不在。
+    # 放在启动远程任务之前：启动用的 SSH 偶尔会卡住被 timeout 中止，放后面可能来不及登记。
+    if not LOCAL_MODE:
+        st = g.load_state(pod["id"])
+        if a.keep_alive:
+            st["stop_after_runs"] = []
+            print("--keep-alive：任务结束后不自动关 pod（时长上限和空闲检测仍然有效）")
+        else:
+            st["stop_after_runs"] = (st.get("stop_after_runs") or [])[-9:] + [run_id]
+            print(f"任务结束 {g.DONE_GRACE_MINUTES} 分钟后，巡检会自动关 pod（不想关就加 --keep-alive）")
+        g.save_state(pod["id"], st)
     # setsid：任务放进独立会话，SSH 断开不会收到 SIGHUP，启动命令也能立即返回（实测只用 nohup 时 ssh 会挂住）
     ssh(pod, f"cd {rd} && setsid nohup bash {POD_ROOT}/repo/pod/run_task.sh {rd} {a.task} {args} > {rd}/run.log 2>&1 < /dev/null & "
              f"echo $! > {rd}/pid", timeout=120)
@@ -177,6 +188,7 @@ def main():
     ap.add_argument("--input", help="推送到 pod 的任务输入目录（小文件）")
     ap.add_argument("--name", help="run 名字后缀")
     ap.add_argument("--detach", action="store_true", help="启动后不跟踪")
+    ap.add_argument("--keep-alive", action="store_true", help="任务结束后不自动关 pod（默认会关）")
     ap.add_argument("--attach", metavar="RUN_ID")
     ap.add_argument("--fetch", metavar="RUN_ID")
     ap.add_argument("--list", action="store_true")

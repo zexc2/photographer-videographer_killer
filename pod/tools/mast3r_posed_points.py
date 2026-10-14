@@ -90,7 +90,9 @@ def main():
     ap.add_argument("--weights", required=True)
     ap.add_argument("--frame", type=int, default=0)
     ap.add_argument("--subsample", type=int, default=2, help="匹配网格步长（越小点越多）")
-    ap.add_argument("--max-reproj", type=float, default=2.0, help="重投影误差上限（像素，原图分辨率）")
+    # MASt3R 在 512 宽的图上匹配，换算回 1920 宽原图每像素放大 3.75 倍，光量化误差就有 ±2 像素；
+    # 2 像素的阈值会把大部分正确匹配也过滤掉（实测 2026-10-14：夹角 >70° 的机位对只剩几百个点）→ 用 8 像素（≈ 网络分辨率下 2 像素）
+    ap.add_argument("--max-reproj", type=float, default=8.0, help="重投影误差上限（像素，原图分辨率）")
     ap.add_argument("--max-radius", type=float, default=4.0, help="离相机中心均值的最大距离（米）")
     ap.add_argument("--voxel", type=float, default=0.005, help="体素去重边长（米）")
     ap.add_argument("--preview", help="把点云投影到各机位的预览图输出目录")

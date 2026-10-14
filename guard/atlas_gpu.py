@@ -58,6 +58,10 @@ MAX_PODS = 1
 DEFAULT_HOURS = 6.0
 MAX_HOURS = 6.0
 IDLE_MINUTES = 30
+# 利用率低于这个值算空闲：残留进程会报 1–2%，按 >0 判断会把空闲计时清零（实测 2026-10-14 pod 空转 35 分钟没被关）
+IDLE_UTIL_PCT = 5
+# atlas-run 登记的任务全部结束、且最后一个结束满这么久后自动 stop（留时间给紧接着的下一个任务）
+DONE_GRACE_MINUTES = 5
 DEFAULT_IMAGE = "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
 MIN_CUDA = "12.8"  # 上面镜像是 cu128，主机驱动至少要支持 12.8
 DEFAULT_CONTAINER_DISK_GB = 200
@@ -423,6 +427,29 @@ def probe_gpu(pod):
     return util, busy, "ok" if util is not None else "nvidia-smi 无输出"
 
 
+def runs_finished(pod, runs):
+    """SSH 查 atlas-run 登记的任务状态。全部结束且最近一个结束 ≥ DONE_GRACE_MINUTES 返回 (True, 说明)；
+    还在跑、查不到或刚结束返回 (False, 说明)。"""
+    q = "; ".join(
+        f'f=/opt/atlas/work/{r}/status; if [ -f $f ]; then echo "{r} $(head -1 $f | cut -d" " -f1) $(( $(date +%s) - $(stat -c %Y $f) ))"; else echo "{r} missing 0"; fi'
+        for r in runs if re.fullmatch(r"[A-Za-z0-9_-]+", r))
+    out, why = ssh_run(pod, ": ATLAS_RUNS_QUERY; " + q)
+    if out is None:
+        return False, f"查不到任务状态（{why}）"
+    ages, states = [], []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) != 3:
+            continue
+        states.append(parts[1])
+        ages.append(int(parts[2]) if parts[2].isdigit() else 0)
+    if not states or any(x in ("running", "missing") for x in states):
+        return False, "任务进行中：" + ",".join(states)
+    if min(ages) < DONE_GRACE_MINUTES * 60:
+        return False, f"任务刚结束 {min(ages)}s"
+    return True, f"登记的任务已全部结束（{','.join(states)}），{min(ages) // 60} 分钟无新任务"
+
+
 def stop_pod(pod, reason, dry_run=False, delete=False):
     if not pod["name"].startswith(PREFIX):  # 双保险
         raise GuardError(f"拒绝操作非 atlas- pod: {pod['name']}")
@@ -669,14 +696,20 @@ def cmd_guard(a):
             if elapsed >= max_h * 3600:
                 stop_pod(p, f"超过时长上限 {max_h:g}h（已运行 {fmt_dur(elapsed)}）", dry_run=a.dry_run)
                 continue
-            # 2) 空闲：API 利用率 > 0 直接算忙；为 0 或拿不到时，再 SSH 用 nvidia-smi 复核 + 看 busy 标记
+            # 2) atlas-run 登记的任务都结束了 → 立即关（不依赖 Claude 的会话还在不在）
+            if st.get("stop_after_runs") and p["status"] == "RUNNING":
+                done, why_done = runs_finished(p, st["stop_after_runs"])
+                if done:
+                    stop_pod(p, why_done, dry_run=a.dry_run)
+                    continue
+            # 3) 空闲：API 利用率 ≥ IDLE_UTIL_PCT 直接算忙；更低或拿不到时，再 SSH 用 nvidia-smi 复核 + 看 busy 标记
             util, busy, why = p["util"], False, "api"
-            if util is None or util == 0:
+            if util is None or util < IDLE_UTIL_PCT:
                 s_util, busy, why = probe_gpu(p)
                 if s_util is not None:
                     util = s_util
             in_grace = elapsed < IDLE_MINUTES * 60
-            if util is not None and (util > 0 or busy):
+            if util is not None and (util >= IDLE_UTIL_PCT or busy):
                 st["idle_since"] = None
                 state = f"util={util:g}%" + (" busy" if busy else "")
             elif util is None and (in_grace or p["status"] != "RUNNING"):
@@ -684,7 +717,7 @@ def cmd_guard(a):
             else:
                 st["idle_since"] = st.get("idle_since") or iso(now())
                 idle_for = (now() - parse_time(st["idle_since"])).total_seconds()
-                state = ("util=0%" if util is not None else f"探测失败（{why}）") + f"，已空闲 {fmt_dur(idle_for)}"
+                state = (f"util={util:g}%" if util is not None else f"探测失败（{why}）") + f"，已空闲 {fmt_dur(idle_for)}"
                 if idle_for >= IDLE_MINUTES * 60 - 30:
                     stop_pod(p, f"GPU 连续空闲 ≥{IDLE_MINUTES} 分钟（{state}）", dry_run=a.dry_run)
                     continue

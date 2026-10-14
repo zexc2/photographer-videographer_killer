@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# 假 SSH：输出 $FAKE_DIR/util 的内容作为 nvidia-smi 结果；文件为 FAIL 时模拟 SSH 不通
+# 假 SSH：输出 $FAKE_DIR/util 的内容作为 nvidia-smi 结果；文件为 FAIL 时模拟 SSH 不通。
+# 远程命令里带 ATLAS_RUNS_QUERY 时，返回 $FAKE_DIR/runs_status（atlas-run 登记任务的状态：run 状态 结束秒数）
 v=$(cat "$FAKE_DIR/util" 2>/dev/null || echo 0)
 [ "$v" = FAIL ] && exit 255
+case "${*: -1}" in
+  *ATLAS_RUNS_QUERY*) cat "$FAKE_DIR/runs_status" 2>/dev/null; exit 0 ;;
+esac
 echo "$v"
 [ -f "$FAKE_DIR/busy" ] && echo "BUSY_AGE=$(cat "$FAKE_DIR/busy")"
 exit 0
