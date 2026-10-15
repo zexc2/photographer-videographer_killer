@@ -55,7 +55,10 @@ if [ ! -f "$CACHE/$SCENE.zip" ]; then
 fi
 if [ ! -f "$CACHE/n3v_mast3r.tar.gz" ]; then
   log "下载作者的预处理包 n3v_mast3r.tar.gz（Google Drive）"
-  "$PY" -m gdown --quiet --id 1ua9GnLG0bbg4zBYY5wOgtI90I_hp6OPh -O "$ATLAS_CACHE/n3v_mast3r.tar.gz"
+  # 新版 gdown 已去掉 --id 参数（实测 2026-10-15），直接用 Google Drive 的确认下载直链
+  curl -fsSL --retry 3 -o "$ATLAS_CACHE/n3v_mast3r.tar.gz" \
+    "https://drive.usercontent.google.com/download?id=1ua9GnLG0bbg4zBYY5wOgtI90I_hp6OPh&export=download&confirm=t"
+  gzip -t "$ATLAS_CACHE/n3v_mast3r.tar.gz" || die "预处理包下载不完整或不是 gzip（可能被 Google Drive 限流）"
   vol_sync "$ATLAS_CACHE/n3v_mast3r.tar.gz" "$CACHE/"
 fi
 if [ ! -d "$D" ]; then
@@ -71,7 +74,8 @@ PRE=$N3V_ROOT/_pre
 if [ ! -d "$PRE" ]; then
   mkdir -p "$PRE" && tar -xzf "$CACHE/n3v_mast3r.tar.gz" -C "$PRE"
 fi
-find "$PRE" -maxdepth 6 | sed "s|$PRE/||" | grep -i "$SCENE" | head -40 > "$OUT/preprocessed_layout.txt"
+# 管道接 head 时，前面的命令会收到 SIGPIPE；配合 set -e / pipefail 会让任务直接中止（实测 2026-10-15），所以加 || true
+{ find "$PRE" -maxdepth 8 | sed "s|$PRE/||" | grep -i "$SCENE" | head -40; } > "$OUT/preprocessed_layout.txt" || true
 log "预处理包里与 $SCENE 相关的路径（前 40 条）：$(tr '\n' ' ' < "$OUT/preprocessed_layout.txt")"
 "$PY" - "$PRE" "$SCENE" "$D" <<'PY' || die "预处理包里没有找到可用的 sparse/0（见 out/preprocessed_layout.txt），不训练，避免浪费 GPU"
 import sys, os, glob, shutil, struct
@@ -134,7 +138,7 @@ done_step
 step render_traj
 (cd "$SRC" && "$PY" render.py --config "$CFG" --training_view "$TRAIN" --output_dir run --res 2 \
    --traj arc --start_checkpoint "$CKPT" 2>&1 | tail -3) || true
-TRAJ=$(ls -d "$MODEL"/run/render/traj/ours_*/renders 2>/dev/null | tail -1)
+TRAJ=$(ls -d "$MODEL"/run/render/traj/ours_*/renders 2>/dev/null | tail -1) || true
 if [ -n "$TRAJ" ]; then
   ffmpeg -loglevel error -y -framerate 30 -i "$TRAJ/%05d.png" -vf "scale=1280:-2" -c:v libx264 -crf 22 \
     -pix_fmt yuv420p "$OUT/videos/${SCENE}_4c4d_arc.mp4"
@@ -144,10 +148,11 @@ done_step
 # ---------------------------------------------------------------- 5. 官方评估（测试视角每 STRIDE 帧取 1 帧）
 step eval
 rm -rf "$E"; mkdir -p "$E/images"; ln -s "$D/sparse" "$E/sparse"
-TRAIN_CAMS=$(echo "$TRAIN" | tr ',' '\n' | awk '{printf "cam%02d\n", $1}')
+TRAIN_SET=" $(echo "$TRAIN" | tr ',' '\n' | awk '{printf "cam%02d ", $1}')"   # 例：" cam01 cam10 cam13 cam20 "
 for f in "$D"/images/cam*_*.png; do
   b=$(basename "$f"); cam=${b%%_*}; fr=${b##*_}; fr=$((10#${fr%.png}))
-  if echo "$TRAIN_CAMS" | grep -qx "$cam" || [ $((fr % STRIDE)) -eq 0 ]; then ln -s "$f" "$E/images/$b"; fi
+  # 用 bash 字符串匹配，不用 echo | grep -q（后者可能因 SIGPIPE 误判）
+  if [[ "$TRAIN_SET" == *" $cam "* ]] || [ $((fr % STRIDE)) -eq 0 ]; then ln -s "$f" "$E/images/$b"; fi
 done
 log "评估集：$(ls "$E/images" | wc -l) 张（训练视角全部帧 + 测试视角每 $STRIDE 帧）"
 # 4C4D 要求 sparse/0 里每个相机至少有一张图；测试视角各保留第 0 帧，满足要求
@@ -156,7 +161,7 @@ sed "s|$D|$E|" "$CFG" > "$ECFG"
 (cd "$SRC" && "$PY" render.py --config "$ECFG" --training_view "$TRAIN" --output_dir run --res 2 \
    --validate --start_checkpoint "$CKPT" 2>&1 | grep -E 'PSNR|LPIPS|Valid|Error|Traceback' | tail -8) || true
 # 官方评估把结果写在 render/test/ours_<iter>/stats/validation.json
-STATS=$(find "$MODEL/run/render" -name validation.json 2>/dev/null | head -1)
+STATS=$(find "$MODEL/run/render" -name validation.json 2>/dev/null | head -1) || true
 [ -n "$STATS" ] && cp "$STATS" "$OUT/official_validation.json"
 done_step
 
