@@ -112,7 +112,7 @@ Each stage records: what was done / problems encountered / time spent / cost.
 ## Stage 2.1: Volume ID and balance check (2026-10-13)
 
 - The Global volume is now identified only by the ID in the config. The name contains a slash and is used only for display; other volumes with the same name will not be picked up by mistake (covered by tests)
-- gpu-up checks the balance before starting a pod: refuses if < $15 or unreadable; warns if the balance would drop below $15 after running the full time limit; gpu-status shows the balance
+- gpu-up checks the balance before starting a pod: refuses if < $15 or unreadable; warns if the balance would drop below $15 after running the full time limit; gpu-status shows the balance *(Later lowered to $3 on 2026-10-14 — see the "Stage 3: CMU Panoptic data scripts" entry below.)*
 - 61 guard tests and 20 runner tests, all passing
 - Real-account dry-run: both A100 types in stock (SXM $1.79/h, 3 regions; PCIe 2 regions). **However, the API key file was not found on the server, and the balance is still $7.07**, so the v2 API path is not yet verified; see report
 
