@@ -18,7 +18,7 @@ ERA MOMENT 做活动摄影摄像。美国 8 小时活动摄像师报价很少低
 | 2 | pod 环境脚本（GEN3C / ViPE / 4C4D），见 [pod/](pod/README.md) | ✅ |
 | 3 | CMU Panoptic 数据准备，见 [docs/stage3-data.md](docs/stage3-data.md) | ✅ |
 | 4 | GEN3C vs 4C4D 基线对比，**报告见 [docs/report-baseline.md](docs/report-baseline.md)** | ✅ 第一轮完成 |
-| 5 | Flask 前端：上传 → 3D 预览 → 设定运镜 → 生成 | ⏳ |
+| 5 | Flask 前端：3D 预览 → 设定运镜 → 生成，见 [frontend/](frontend/README.md) | 🔧 样例场景版完成，待真实 GPU 测试；上传素材待做 |
 | 6 | 接入 360 转透视工具 | ⏳ |
 
 详细进度、问题、耗时与花费见 [PROGRESS.md](PROGRESS.md)。
@@ -52,6 +52,7 @@ ERA MOMENT 做活动摄影摄像。美国 8 小时活动摄像师报价很少低
 ├── PROGRESS.md     每阶段进度记录
 ├── CLAUDE.md       项目简报 / 工作约定
 ├── docs/           设计与决策文档
+├── frontend/       运镜工作台（Flask，只监听 127.0.0.1）
 ├── pod/            pod 端脚本：环境安装（GEN3C / ViPE / 4C4D）、任务包装
 ├── runner/         atlas-run：服务器 → pod 的任务执行器
 └── guard/          GPU 护栏：gpu-up / gpu-down / gpu-status / gpu-guard + 离线测试

@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ATLAS 运镜工作台</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+<header class="bar">
+  <div class="brand">ATLAS 运镜工作台</div>
+  <select id="model" aria-label="选择场景"></select>
+  <div class="spacer"></div>
+  <div id="fake-tag" class="tag warn" hidden>模拟模式：不开 GPU，结果是测试画面</div>
+  <div id="gpu" class="meta">GPU：—</div>
+  <div id="balance" class="meta">余额：—</div>
+</header>
+
+<main class="layout">
+  <section class="viewer">
+    <div class="viewer-tools">
+      <div class="seg" role="tablist">
+        <button id="mode-free" class="on">自由视角</button>
+        <button id="mode-shot">镜头视角</button>
+      </div>
+      <button id="play" title="播放运镜预览">▶ 播放</button>
+      <input id="scrub" type="range" min="0" max="0" value="0" aria-label="预览时间">
+      <span id="scrub-label" class="mono">0.00 s</span>
+    </div>
+    <div id="canvas-wrap"></div>
+    <p class="hint" id="viewer-hint">点云只是位置参考，真实画面要点"确认生成"后由 GPU 渲染。灰色线框是真实机位，橙色是你的关键帧，橙线是运镜路径。</p>
+    <div id="no-scene" class="empty" hidden>
+      <h2>这个场景还没有 3D 预览</h2>
+      <p>需要开一次 GPU，从训练好的模型里导出点云、机位和缩略图。只需做一次。</p>
+      <button id="export-btn" class="primary">准备场景预览</button>
+    </div>
+  </section>
+
+  <aside class="panel">
+    <section>
+      <h3>1. 选一个固定机位作为起点</h3>
+      <div id="cams" class="cams"></div>
+      <p class="hint">带 ★ 的是训练用的 4 个机位。所有关键帧的位移、转角都以这个机位为参照。</p>
+    </section>
+
+    <section>
+      <h3>2. 设置运镜</h3>
+      <div class="row">
+        <label>总时长 <input id="duration" type="number" min="0.5" max="30" step="0.5" value="4"> 秒</label>
+        <label>帧率 <select id="fps"><option>24</option><option>25</option><option selected>30</option></select></label>
+      </div>
+      <div class="row">
+        <label>分辨率 <select id="res">
+          <option value="960x720" selected>960×720</option>
+          <option value="1280x960">1280×960</option>
+          <option value="1352x1014">1352×1014（训练分辨率）</option>
+          <option value="1280x720">1280×720（16:9）</option>
+        </select></label>
+      </div>
+      <div class="kf-head">
+        <span>关键帧</span>
+        <button id="kf-add" class="small">＋ 添加</button>
+      </div>
+      <ol id="kf-list" class="kf-list"></ol>
+      <div id="kf-editor" class="kf-editor"></div>
+    </section>
+
+    <section>
+      <h3>3. 确认生成</h3>
+      <div id="estimate" class="estimate">—</div>
+      <button id="render-btn" class="primary" disabled>确认生成…</button>
+    </section>
+
+    <section>
+      <h3>任务</h3>
+      <div id="jobs" class="jobs"></div>
+    </section>
+  </aside>
+</main>
+
+<div id="modal" class="modal" hidden>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <h2 id="modal-title">开 GPU 并生成？</h2>
+    <div id="modal-body"></div>
+    <div class="modal-actions">
+      <button id="modal-cancel">取消</button>
+      <button id="modal-ok" class="primary">开 GPU 并生成</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

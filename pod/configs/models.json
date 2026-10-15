@@ -1,0 +1,14 @@
+{
+  "_comment": "前端可用的已训练 4C4D 模型。路径相对于 Global volume（$ATLAS_VOL）。训练记录见 docs/reproduction-n3v.md",
+  "n3v_flame_steak": {
+    "title": "N3V flame_steak（厨房做菜，4 机位训练）",
+    "checkpoint": "results/20261015-020104-n3v3/full/model/run/chkpnt_best.pth",
+    "config": "results/20261015-020104-n3v3/config_used.yaml",
+    "sparse_tar": "datasets/n3v/n3v_mast3r.tar.gz",
+    "sparse_member": "N3V/mast3r/flame_steak/sparse/0/",
+    "train_cams": ["cam01", "cam10", "cam13", "cam20"],
+    "source_seconds": 10.0,
+    "source_frames": 300,
+    "license": "Neural 3D Video：CC BY-NC 4.0，仅限研究"
+  }
+}
