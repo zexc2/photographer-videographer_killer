@@ -30,12 +30,13 @@ declare -A T_S VRAM
 phase_begin() {
   PHASE=$1; PHASE_T0=$SECONDS
   echo 0 > "$ATLAS_LOGS/peak_$PHASE"
+  # 标记文件必须在启动采样循环之前创建，否则循环一开始就因为找不到标记而退出（2026-10-14 峰值一直是 0）
+  touch "$ATLAS_LOGS/peak_$PHASE.on"
   ( while [ -f "$ATLAS_LOGS/peak_$PHASE.on" ]; do
       m=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | sort -n | tail -1)
       # 用 if，不用 [ … ] && …：后者在"不更大"时返回非 0，配合 set -e 会让采样进程直接退出（2026-10-14 实测峰值全是 0）
       if [ -n "$m" ] && [ "$m" -gt "$(cat "$ATLAS_LOGS/peak_$PHASE")" ]; then echo "$m" > "$ATLAS_LOGS/peak_$PHASE"; fi
       sleep 3; done ) &
-  touch "$ATLAS_LOGS/peak_$PHASE.on"
   log "▶ $PHASE"
 }
 phase_end() {

@@ -15,13 +15,24 @@ ERA MOMENT 做活动摄影摄像。美国 8 小时活动摄像师报价很少低
 |---|---|---|
 | 0 | 仓库初始化 | ✅ |
 | 1 | GPU 成本护栏（开/关/巡检 RunPod pod），见 [guard/](guard/README.md) | ✅ |
-| 2 | pod 环境脚本（GEN3C / ViPE / 4C4D），见 [pod/](pod/README.md) | ✅ 脚本完成，待上 pod 实测 |
-| 3 | CMU Panoptic 数据准备，见 [docs/stage3-data.md](docs/stage3-data.md) | 🔧 脚本完成，待上 pod 运行 |
-| 4 | GEN3C vs 4C4D 基线对比（效果 / 耗时 / 成本），方法见 [docs/stage4-method.md](docs/stage4-method.md) | 🔧 代码完成，待上 pod |
+| 2 | pod 环境脚本（GEN3C / ViPE / 4C4D），见 [pod/](pod/README.md) | ✅ |
+| 3 | CMU Panoptic 数据准备，见 [docs/stage3-data.md](docs/stage3-data.md) | ✅ |
+| 4 | GEN3C vs 4C4D 基线对比，**报告见 [docs/report-baseline.md](docs/report-baseline.md)** | ✅ 第一轮完成 |
 | 5 | Flask 前端：上传 → 3D 预览 → 设定运镜 → 生成 | ⏳ |
 | 6 | 接入 360 转透视工具 | ⏳ |
 
 详细进度、问题、耗时与花费见 [PROGRESS.md](PROGRESS.md)。
+
+## 第一阶段结果（2026-10-15）
+
+在 CMU Panoptic 上，从一个训练时没用过的机位生成画面，和真实画面比较：
+
+| 方案 | 输入 | PSNR ↑ | SSIM ↑ | LPIPS ↓ | GPU 成本 |
+|---|---|---|---|---|---|
+| GEN3C | 1 个机位 | 15.96 | 0.661 | 0.578 | 约 $0.61 / 每 5 秒输出 |
+| **4C4D** | 4 个机位 | **21.74** | **0.818** | **0.378** | 约 $4.71 / 每 10 秒素材 |
+
+做 3–5 分钟的 AI 运镜精华片段，GPU 成本约 $22–141，远低于 $1500 的摄像师报价；但覆盖整场 8 小时活动会超出 $1500。4C4D 目前的代码不能商用。详见 [对比报告](docs/report-baseline.md)。
 
 ## 架构
 
