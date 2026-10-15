@@ -32,6 +32,17 @@ sys.path.insert(0, str(APP))
 sys.path.insert(0, str(REPO / "guard"))
 import traj  # noqa: E402
 
+class ApiError(Exception):
+    """返回给页面的错误：只有稳定的 code 和参数，文字由前端按当前语言翻译。"""
+    def __init__(self, status, code, **params):
+        super().__init__(code)
+        self.status, self.code, self.params = status, code, params
+
+
+def fail(status, code, **params):
+    raise ApiError(status, code, **params)
+
+
 app = Flask(__name__, static_folder=str(APP / "static"), static_url_path="/static")
 (DATA / "jobs").mkdir(parents=True, exist_ok=True)
 (DATA / "scenes").mkdir(parents=True, exist_ok=True)
@@ -39,14 +50,14 @@ app = Flask(__name__, static_folder=str(APP / "static"), static_url_path="/stati
 
 def scene_dir(model):
     if model not in MODELS:
-        abort(404, "没有这个模型")
+        fail(404, "model_not_found", model=model)
     return DATA / "scenes" / model
 
 
 def load_scene(model):
     p = scene_dir(model) / "scene.json"
     if not p.exists():
-        abort(409, "这个模型还没有导出场景预览")
+        fail(409, "scene_not_ready", model=model)
     s = json.loads(p.read_text())
     s.setdefault("source_seconds", MODELS[model].get("source_seconds", 10.0))
     return s
@@ -85,7 +96,7 @@ def estimate(n_frames, width, height, kind="render"):
 
 def start_job(kind, model, spec_extra=None, traj_obj=None):
     if running_job():
-        abort(409, "已有一个 GPU 任务在进行，请等它结束")
+        fail(409, "job_running")
     jid = time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)
     d = DATA / "jobs" / jid
     (d / "input").mkdir(parents=True)
@@ -93,7 +104,7 @@ def start_job(kind, model, spec_extra=None, traj_obj=None):
     (d / "spec.json").write_text(json.dumps(spec, indent=1, ensure_ascii=False))
     if traj_obj is not None:
         (d / "input" / "traj.json").write_text(json.dumps(traj_obj))
-    (d / "status.json").write_text(json.dumps({"state": "queued", "stage": "排队中", "kind": kind, "model": model,
+    (d / "status.json").write_text(json.dumps({"state": "queued", "stage_code": "queued", "kind": kind, "model": model,
                                                 "created": time.strftime("%Y-%m-%dT%H:%M:%S")}, ensure_ascii=False))
     (DATA / "jobs" / ".lock").write_text(jid)
     env = dict(os.environ)
@@ -121,7 +132,7 @@ def showcase():
 def showcase_data():
     p = SHOWCASE / "showcase.json"
     if not p.exists():
-        abort(404, "还没有生成展示素材：python3 frontend/showcase_build.py")
+        fail(404, "showcase_missing")
     return send_file(p, mimetype="application/json", max_age=0)
 
 
@@ -138,7 +149,7 @@ def api_models():
     out = []
     for k, m in MODELS.items():
         sd = DATA / "scenes" / k
-        out.append({"key": k, "title": m["title"], "license": m.get("license"), "train_cams": m.get("train_cams", []),
+        out.append({"key": k, "title": m["title"], "title_en": m.get("title_en", m["title"]), "license": m.get("license"), "train_cams": m.get("train_cams", []),
                     "source_seconds": m.get("source_seconds", 10.0), "scene_ready": (sd / "scene.json").exists(),
                     "export_estimate": estimate(0, 0, 0, "export")})
     return jsonify({"models": out, "fake": FAKE})
@@ -181,18 +192,20 @@ def api_export(model):
 
 # ---------------------------------------------------------------- 轨迹
 def parse_spec(body, scene):
+    if not isinstance(body, dict):
+        fail(400, "bad_request")
     spec = {k: body.get(k) for k in ("base_cam", "keyframes", "duration", "fps", "width", "height")}
     if spec["base_cam"] not in scene["cameras"]:
-        abort(400, "基准机位不存在")
+        fail(400, "base_cam_not_found", cam=str(spec["base_cam"]))
     spec["fps"] = int(spec["fps"] or 30)
     spec["duration"] = float(spec["duration"] or 4)
     spec["width"], spec["height"] = int(spec["width"] or 960), int(spec["height"] or 720)
     if not (0.5 <= spec["duration"] <= 30) or spec["fps"] not in (24, 25, 30):
-        abort(400, "时长需在 0.5–30 秒，帧率 24/25/30")
+        fail(400, "bad_duration_fps", min=0.5, max=30, fps=[24, 25, 30])
     if spec["width"] * spec["height"] > MAX_PIXELS or spec["width"] % 2 or spec["height"] % 2:
-        abort(400, "分辨率过大或不是偶数")
+        fail(400, "bad_resolution", max_w=1600, max_h=1200)
     if not spec["keyframes"]:
-        abort(400, "至少需要一个关键帧")
+        fail(400, "no_keyframes")
     return spec
 
 
@@ -217,11 +230,11 @@ def api_render(model):
     scene = load_scene(model)
     body = request.get_json(force=True)
     if not body.get("confirm"):
-        abort(400, "需要确认")
+        fail(400, "confirm_required")
     spec = parse_spec(body, scene)
     t = traj.build_trajectory(scene, spec)
     if len(t["frames"]) > MAX_FRAMES:
-        abort(400, f"帧数超过上限 {MAX_FRAMES}")
+        fail(400, "too_many_frames", max=MAX_FRAMES)
     jid = start_job("render", model, {"trajectory_spec": spec,
                                       "estimate": estimate(len(t["frames"]), spec["width"], spec["height"])}, t)
     return jsonify({"job": jid})
@@ -276,11 +289,17 @@ def api_status():
     return jsonify(out)
 
 
+@app.errorhandler(ApiError)
+def api_err(e):
+    return jsonify({"code": e.code, "params": e.params}), e.status
+
+
 @app.errorhandler(400)
 @app.errorhandler(404)
 @app.errorhandler(409)
-def err(e):
-    return jsonify({"error": getattr(e, "description", str(e))}), e.code
+def http_err(e):
+    # Flask 自己产生的错误（找不到路由、JSON 解析失败等）
+    return jsonify({"code": {400: "bad_request", 404: "not_found", 409: "conflict"}[e.code], "params": {}}), e.code
 
 
 if __name__ == "__main__":

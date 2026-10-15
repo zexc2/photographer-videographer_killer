@@ -33,6 +33,13 @@ sys.path.insert(0, str(REPO / "guard"))
 sys.path.insert(0, str(REPO / "runner"))
 
 
+class JobError(Exception):
+    """显示在任务栏的错误：稳定的 code + 参数，前端翻译；技术细节只写进 job.log。"""
+    def __init__(self, code, **params):
+        super().__init__(code)
+        self.code, self.params = code, params
+
+
 def now():
     return dt.datetime.now(dt.timezone.utc)
 
@@ -57,6 +64,10 @@ class Job:
         tmp.write_text(json.dumps(self.st, indent=1, ensure_ascii=False))
         tmp.replace(self.status_path)
 
+    def stage(self, code, **params):
+        """任务进度：只存 code 和参数，前端按当前语言显示。"""
+        self.update(stage_code=code, stage_params=params)
+
     def log(self, msg):
         with open(self.dir / "job.log", "a") as f:
             f.write(f"{now().strftime('%H:%M:%S')} {msg}\n")
@@ -74,21 +85,21 @@ def ensure_pod(job):
     active = [p for p in pods if p["status"] in g.ACTIVE]
     other = [p for p in active if p["name"] != POD_NAME]
     if other:
-        raise RuntimeError(f"GPU 正被其他任务使用（{other[0]['name']}），请稍后再试")
+        raise JobError("gpu_busy", name=other[0]["name"])
     mine = [p for p in active if p["name"] == POD_NAME]
     if mine:
         job.log("复用已在运行的渲染 pod")
         p = mine[0]
-        job.update(stage="复用已开启的 GPU", cost_per_hr=p.get("cost") or 1.79, gpu_started=now().isoformat(timespec="seconds"),
-                   pod_id=p["id"])
+        job.stage("reusing_gpu")
+        job.update(cost_per_hr=p.get("cost") or 1.79, gpu_started=now().isoformat(timespec="seconds"), pod_id=p["id"])
         return
     # RunPod 从创建 pod 起就计费，所以在调用 gpu-up 之前开始计时（宁可略微高估）
     t_start = now().isoformat(timespec="seconds")
-    job.update(stage="开启 GPU（约 1 分钟）")
+    job.stage("starting_gpu")
     rc, out = sh([str(BIN / "gpu-up"), "--name", "render", "--hours", POD_HOURS, "--wait", "10"], timeout=900)
     job.log(out[-1500:])
     if rc != 0:
-        raise RuntimeError("开启 GPU 失败：" + (out.strip().splitlines() or ["未知原因"])[-1])
+        raise JobError("gpu_start_failed")      # 护栏的原始输出已写入 job.log
     price = 1.79
     for line in out.splitlines():
         if "估算花费" in line and "$" in line:
@@ -98,7 +109,7 @@ def ensure_pod(job):
                 pass
     pod_id = next((l.split(":", 1)[1].strip() for l in out.splitlines() if l.startswith("pod ID")), None)
     if not pod_id:
-        raise RuntimeError("gpu-up 没有返回 pod ID（护栏仍会按时长上限关机）")
+        raise JobError("no_pod_id")             # 护栏仍会按时长上限关机
     job.update(cost_per_hr=price, gpu_started=t_start, pod_id=pod_id)
 
 
@@ -109,14 +120,14 @@ def run_on_pod(job, task, args, input_dir=None):
     if input_dir:
         cmd += ["--input", str(input_dir)]
     cmd += [task, *args]
-    job.update(stage="推送任务到 GPU")
+    job.stage("pushing")
     try:
         sh(cmd, timeout=120)       # 启动用的 SSH 偶尔不返回，任务本身已经启动；超时后照常跟踪
     except subprocess.TimeoutExpired:
         pass
     runs = sorted((Path.home() / "runs").glob(f"*-{run_name}"))
     if not runs:
-        raise RuntimeError("任务没有启动（服务器上找不到记录）")
+        raise JobError("run_not_started")
     run_id = runs[-1].name
     job.update(run_id=run_id)
     pod = ar.the_pod()
@@ -137,15 +148,16 @@ def run_on_pod(job, task, args, input_dir=None):
                 except json.JSONDecodeError:
                     pass
         if prog:
-            job.update(stage=f"渲染中 {prog['done']}/{prog['total']} 帧", progress=round(prog["done"] / prog["total"], 3))
+            job.stage("rendering", done=prog["done"], total=prog["total"])
+            job.update(progress=round(prog["done"] / prog["total"], 3))
         elif status == "running":
-            job.update(stage="GPU 上准备环境和模型（约 2–3 分钟）")
+            job.stage("preparing")
         else:
             job.update()
         if status and status != "running":
             break
         time.sleep(POLL)
-    job.update(stage="拉回结果")
+    job.stage("fetching")
     try:
         ar.fetch(run_id, pod)
     except SystemExit:
@@ -154,7 +166,7 @@ def run_on_pod(job, task, args, input_dir=None):
     if status != "done":
         tail = (out / "run.log").read_text(errors="ignore")[-1500:] if (out / "run.log").exists() else ""
         job.log(tail)
-        raise RuntimeError("GPU 上的任务失败，详见任务日志")
+        raise JobError("pod_task_failed")
     return out
 
 
@@ -169,9 +181,10 @@ def stop_pod(job):
 
 # ---------------------------------------------------------------- 模拟流程
 def fake_run(job, kind):
-    job.update(stage="开启 GPU（模拟）", cost_per_hr=1.79, gpu_started=now().isoformat(timespec="seconds"))
+    job.stage("starting_gpu", fake=True)
+    job.update(cost_per_hr=1.79, gpu_started=now().isoformat(timespec="seconds"))
     time.sleep(2)
-    job.update(stage="GPU 上准备环境和模型（模拟）")
+    job.stage("preparing", fake=True)
     time.sleep(2)
     out = job.dir / "_fake_out"
     out.mkdir(exist_ok=True)
@@ -182,7 +195,8 @@ def fake_run(job, kind):
         t = json.loads((job.dir / "input" / "traj.json").read_text())
         n = len(t["frames"])
         for i in range(0, n, max(1, n // 5)):
-            job.update(stage=f"渲染中 {i}/{n} 帧（模拟）", progress=round(i / n, 3))
+            job.stage("rendering", done=i, total=n, fake=True)
+            job.update(progress=round(i / n, 3))
             time.sleep(1)
         sh(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
             f"testsrc2=size={t['width']}x{t['height']}:rate={t['fps']}", "-frames:v", str(n),
@@ -198,7 +212,7 @@ def main(job_id):
     kind = job.spec["kind"]
     model = job.spec["model"]
     lock = DATA / "jobs" / ".lock"
-    job.update(state="running", pid=os.getpid(), stage="排队中", started=now().isoformat(timespec="seconds"))
+    job.update(state="running", pid=os.getpid(), stage_code="queued", stage_params={}, started=now().isoformat(timespec="seconds"))
     started_pod = False
     try:
         if FAKE:
@@ -219,13 +233,17 @@ def main(job_id):
             shutil.copy(out / "render.mp4", job.dir / "render.mp4")
             if (out / "metrics.json").exists():
                 job.update(render_stats=json.loads((out / "metrics.json").read_text()))
-        job.update(state="done", stage="完成", progress=1.0)
-    except Exception as e:  # noqa: BLE001
+        job.update(state="done", stage_code="done", stage_params={}, progress=1.0)
+    except JobError as e:
         job.log(traceback.format_exc())
-        job.update(state="failed", stage="失败", error=str(e))
+        job.update(state="failed", stage_code="failed", stage_params={}, error_code=e.code, error_params=e.params)
+    except Exception:  # noqa: BLE001  意外错误：页面显示通用提示，细节在日志里
+        job.log(traceback.format_exc())
+        job.update(state="failed", stage_code="failed", stage_params={}, error_code="unexpected", error_params={})
     finally:
         if started_pod and not FAKE:
-            job.update(stage=job.st.get("stage", "") + "，正在关闭 GPU" if job.st.get("state") == "running" else job.st.get("stage"))
+            if job.st.get("state") == "running":
+                job.stage("stopping_gpu")
             stop_pod(job)
         job.update(finished=now().isoformat(timespec="seconds"))
         lock.unlink(missing_ok=True)

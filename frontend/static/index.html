@@ -1,81 +1,85 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ATLAS 运镜工作台</title>
+<title>ATLAS Camera Path Workbench</title>
 <link rel="stylesheet" href="/static/style.css">
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="/static/i18n.js"></script>
 </head>
 <body>
 <header class="bar">
-  <div class="brand">ATLAS 运镜工作台</div>
-  <select id="model" aria-label="选择场景"></select>
+  <div class="brand" data-i18n="brand"></div>
+  <select id="model" data-i18n-aria="model.aria"></select>
   <div class="spacer"></div>
-  <a class="meta" href="/showcase" target="_blank">结果展示页 ↗</a>
-  <div id="fake-tag" class="tag warn" hidden>模拟模式：不开 GPU，结果是测试画面</div>
-  <div id="gpu" class="meta">GPU：—</div>
-  <div id="balance" class="meta">余额：—</div>
+  <div id="fake-tag" class="tag warn" data-i18n="fake" hidden></div>
+  <div id="gpu" class="meta"></div>
+  <div id="balance" class="meta"></div>
+  <a class="meta" href="/showcase" target="_blank" data-i18n="results"></a>
+  <div class="lang" role="group" data-i18n-aria="lang.aria">
+    <button data-lang="en" class="small">EN</button><button data-lang="zh" class="small">中文</button>
+  </div>
 </header>
 
 <main class="layout">
   <section class="viewer">
     <div class="viewer-tools">
       <div class="seg" role="tablist">
-        <button id="mode-free" class="on">自由视角</button>
-        <button id="mode-shot">镜头视角</button>
+        <button id="mode-free" class="on" data-i18n="view.free"></button>
+        <button id="mode-shot" data-i18n="view.shot"></button>
       </div>
-      <button id="play" title="播放运镜预览">▶ 播放</button>
-      <input id="scrub" type="range" min="0" max="0" value="0" aria-label="预览时间">
+      <button id="play" data-i18n-title="play.title"></button>
+      <input id="scrub" type="range" min="0" max="0" value="0" data-i18n-aria="scrub.aria">
       <span id="scrub-label" class="mono">0.00 s</span>
     </div>
     <div id="canvas-wrap"></div>
-    <p class="hint" id="viewer-hint">点云只是位置参考，真实画面要点"确认生成"后由 GPU 渲染。灰色线框是真实机位，橙色是你的关键帧，橙线是运镜路径。</p>
+    <p class="hint" id="viewer-hint" data-i18n="viewer.hint"></p>
     <div id="no-scene" class="empty" hidden>
-      <h2>这个场景还没有 3D 预览</h2>
-      <p>需要开一次 GPU，从训练好的模型里导出点云、机位和缩略图。只需做一次。</p>
-      <button id="export-btn" class="primary">准备场景预览</button>
+      <h2 data-i18n="noscene.title"></h2>
+      <p data-i18n="noscene.body"></p>
+      <button id="export-btn" class="primary" data-i18n="noscene.btn"></button>
     </div>
   </section>
 
   <aside class="panel">
     <section>
-      <h3>1. 选一个固定机位作为起点</h3>
+      <h3 data-i18n="step1"></h3>
       <div id="cams" class="cams"></div>
-      <p class="hint">带 ★ 的是训练用的 4 个机位。所有关键帧的位移、转角都以这个机位为参照。</p>
+      <p class="hint" data-i18n="step1.hint"></p>
     </section>
 
     <section>
-      <h3>2. 设置运镜</h3>
+      <h3 data-i18n="step2"></h3>
       <div class="row">
-        <label>总时长 <input id="duration" type="number" min="0.5" max="30" step="0.5" value="4"> 秒</label>
-        <label>帧率 <select id="fps"><option>24</option><option>25</option><option selected>30</option></select></label>
+        <label><span data-i18n="duration"></span> <input id="duration" type="number" min="0.5" max="30" step="0.5" value="4"> <span data-i18n="sec"></span></label>
+        <label><span data-i18n="fps"></span> <select id="fps"><option>24</option><option>25</option><option selected>30</option></select></label>
       </div>
       <div class="row">
-        <label>分辨率 <select id="res">
+        <label><span data-i18n="res"></span> <select id="res">
           <option value="960x720" selected>960×720</option>
           <option value="1280x960">1280×960</option>
-          <option value="1352x1014">1352×1014（训练分辨率）</option>
-          <option value="1280x720">1280×720（16:9）</option>
+          <option value="1352x1014" data-i18n="res.train"></option>
+          <option value="1280x720" data-i18n="res.wide"></option>
         </select></label>
       </div>
       <div class="kf-head">
-        <span>关键帧</span>
-        <button id="kf-add" class="small">＋ 添加</button>
+        <span data-i18n="kf.title"></span>
+        <button id="kf-add" class="small" data-i18n="kf.add"></button>
       </div>
       <ol id="kf-list" class="kf-list"></ol>
       <div id="kf-editor" class="kf-editor"></div>
     </section>
 
     <section>
-      <h3>3. 确认生成</h3>
+      <h3 data-i18n="step3"></h3>
       <div id="estimate" class="estimate">—</div>
-      <button id="render-btn" class="primary" disabled>确认生成…</button>
+      <button id="render-btn" class="primary" disabled data-i18n="render.btn"></button>
     </section>
 
     <section>
-      <h3>任务</h3>
+      <h3 data-i18n="jobs.title"></h3>
       <div id="jobs" class="jobs"></div>
     </section>
   </aside>
@@ -83,11 +87,11 @@
 
 <div id="modal" class="modal" hidden>
   <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-    <h2 id="modal-title">开 GPU 并生成？</h2>
+    <h2 id="modal-title"></h2>
     <div id="modal-body"></div>
     <div class="modal-actions">
-      <button id="modal-cancel">取消</button>
-      <button id="modal-ok" class="primary">开 GPU 并生成</button>
+      <button id="modal-cancel" data-i18n="modal.cancel"></button>
+      <button id="modal-ok" class="primary"></button>
     </div>
   </div>
 </div>

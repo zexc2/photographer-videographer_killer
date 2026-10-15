@@ -95,3 +95,10 @@ input[type=number] { width: 70px; }
   .panel { border-left: none; border-top: 1px solid var(--line); }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* 语言切换 EN / 中文 */
+.lang { display: inline-flex; }
+.lang button { border-radius: 0; padding: 2px 9px; }
+.lang button:first-child { border-radius: 6px 0 0 6px; }
+.lang button:last-child { border-radius: 0 6px 6px 0; border-left: none; }
+.lang button.on { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); font-weight: 600; }

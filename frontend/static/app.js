@@ -8,16 +8,17 @@ const S = {
   path: null, mode: "free", playing: false, playT0: 0, pointSize: 0.01,
 };
 const FIELDS = [
-  // 键, 标签, 最小, 最大, 步长, 单位
-  ["t", "输出时间", 0, 30, 0.1, "s"],
-  ["src", "源视频时间", 0, 10, 0.1, "s"],
-  ["right", "右移", -4, 4, 0.05, "格"],
-  ["up", "上移", -3, 3, 0.05, "格"],
-  ["forward", "前进", -4, 4, 0.05, "格"],
-  ["yaw", "左右转（右正）", -60, 60, 1, "°"],
-  ["pitch", "上下转（上正）", -40, 40, 1, "°"],
-  ["fov", "视场角", 20, 100, 1, "°"],
+  // 键, 最小, 最大, 步长, 单位（"sp" = 机位间距，按语言翻译）；标签文字是 i18n 的 f.<键>
+  ["t", 0, 30, 0.1, "s"],
+  ["src", 0, 10, 0.1, "s"],
+  ["right", -4, 4, 0.05, "sp"],
+  ["up", -3, 3, 0.05, "sp"],
+  ["forward", -4, 4, 0.05, "sp"],
+  ["yaw", -60, 60, 1, "°"],
+  ["pitch", -40, 40, 1, "°"],
+  ["fov", 20, 100, 1, "°"],
 ];
+const unitText = (u) => (u === "sp" ? t("unit.sp") : u);
 
 // ---------------------------------------------------------------- three.js
 const wrap = $("canvas-wrap");
@@ -94,7 +95,7 @@ function loop() {
   if (S.playing && S.path) {
     const n = S.path.frames.length, fps = +$("fps").value;
     const i = Math.floor(((performance.now() - S.playT0) / 1000) * fps);
-    if (i >= n) { S.playing = false; $("play").textContent = "▶ 播放"; }
+    if (i >= n) { S.playing = false; $("play").textContent = t("play"); }
     else { $("scrub").value = i; showFrame(i); }
   }
   controls.update();
@@ -120,19 +121,30 @@ function loop() {
 }
 
 // ---------------------------------------------------------------- 数据
+// 出错时抛出的 Error 带 info = {code, params}（后端给的），显示时用 tErr(e.info) 按当前语言翻译
 async function api(path, opts) {
-  const r = await fetch(path, opts);
+  let r;
+  try { r = await fetch(path, opts); } catch { const e = new Error("network"); e.info = { code: "network" }; throw e; }
   const body = r.headers.get("content-type")?.includes("json") ? await r.json() : await r.text();
-  if (!r.ok) throw new Error(body.error || body || r.statusText);
+  if (!r.ok) {
+    const e = new Error(body?.code || String(r.status));
+    e.info = body?.code ? body : { code: { 400: "bad_request", 404: "not_found", 409: "conflict" }[r.status] || "unknown", params: {} };
+    throw e;
+  }
   return body;
 }
 
 async function loadModels() {
   const d = await api("/api/models");
   $("fake-tag").hidden = !d.fake;
-  $("model").innerHTML = d.models.map((m) => `<option value="${m.key}">${m.title}</option>`).join("");
   S.models = d.models;
+  renderModelOptions(d.models[0].key);
   await selectModel(d.models[0].key);
+}
+
+function renderModelOptions(selected) {
+  $("model").innerHTML = S.models.map((m) =>
+    `<option value="${m.key}" ${m.key === selected ? "selected" : ""}>${LANG === "zh" ? m.title : m.title_en}</option>`).join("");
 }
 
 async function selectModel(key) {
@@ -159,7 +171,7 @@ async function selectModel(key) {
     groups.cams.add(frustum(c.c2w, c.fov, c.width / c.height, S.scene.spacing * 0.5, train.has(name) ? 0xb9c4bf : 0x6f7a75));
   }
   $("cams").innerHTML = Object.keys(S.scene.cameras).map((name) =>
-    `<button class="cam" data-cam="${name}" title="${name}"><img loading="lazy" alt="${name} 的画面" src="/api/scene/${key}/thumb/${name}.jpg"><span>${train.has(name) ? "★ " : ""}${name}</span></button>`).join("");
+    `<button class="cam" data-cam="${name}" title="${name}"><img loading="lazy" alt="${t("cam.alt", { name })}" src="/api/scene/${key}/thumb/${name}.jpg"><span>${train.has(name) ? "★ " : ""}${name}</span></button>`).join("");
   document.querySelectorAll(".cam").forEach((b) => b.onclick = () => selectBase(b.dataset.cam));
   const first = Object.keys(S.scene.cameras).includes("cam00") ? "cam00" : Object.keys(S.scene.cameras)[0];
   selectBase(first);
@@ -195,21 +207,21 @@ const round = (v, d = 2) => Math.round(v * 10 ** d) / 10 ** d;
 function renderKeyframes() {
   S.keyframes.sort((a, b) => a.t - b.t);
   $("kf-list").innerHTML = S.keyframes.map((k, i) =>
-    `<li><button data-i="${i}" class="${i === S.sel ? "on" : ""}"><span>关键帧 ${i + 1}</span><span class="mono">${k.t.toFixed(1)} s · 源 ${k.src.toFixed(1)} s</span></button></li>`).join("");
+    `<li><button data-i="${i}" class="${i === S.sel ? "on" : ""}"><span>${t("kf.item", { n: i + 1 })}</span><span class="mono">${t("kf.times", { t: k.t.toFixed(1), s: k.src.toFixed(1) })}</span></button></li>`).join("");
   document.querySelectorAll("#kf-list button").forEach((b) => b.onclick = () => { S.sel = +b.dataset.i; renderKeyframes(); });
   const k = S.keyframes[S.sel];
   if (!k) { $("kf-editor").innerHTML = ""; return; }
-  $("kf-editor").innerHTML = FIELDS.map(([key, label, mn, mx, st, unit]) => `
-    <label class="slider"><span>${label}</span>
+  $("kf-editor").innerHTML = FIELDS.map(([key, mn, mx, st, unit]) => `
+    <label class="slider"><span>${t("f." + key)}</span>
       <input type="range" id="f-${key}" min="${key === "t" ? 0 : mn}" max="${key === "t" ? +$("duration").value : mx}" step="${st}" value="${k[key]}">
-      <output id="o-${key}">${(+k[key]).toFixed(st < 1 ? 2 : 0)} ${unit}</output></label>`).join("") +
-    `<div class="kf-actions"><button id="kf-del" class="small" ${S.keyframes.length <= 1 ? "disabled" : ""}>删除这个关键帧</button>
-     <button id="kf-reset" class="small">回到基准机位</button></div>
-     <p class="hint">"格" = 相邻真实机位的平均间距（${S.scene.spacing.toFixed(3)} 场景单位）。机位覆盖范围之外，画质会明显下降。</p>`;
-  FIELDS.forEach(([key, , , , st, unit]) => {
+      <output id="o-${key}">${(+k[key]).toFixed(st < 1 ? 2 : 0)} ${unitText(unit)}</output></label>`).join("") +
+    `<div class="kf-actions"><button id="kf-del" class="small" ${S.keyframes.length <= 1 ? "disabled" : ""}>${t("kf.del")}</button>
+     <button id="kf-reset" class="small">${t("kf.reset")}</button></div>
+     <p class="hint">${t("kf.hint", { v: S.scene.spacing.toFixed(3) })}</p>`;
+  FIELDS.forEach(([key, , , st, unit]) => {
     $(`f-${key}`).oninput = (e) => {
       k[key] = +e.target.value;
-      $(`o-${key}`).textContent = `${k[key].toFixed(st < 1 ? 2 : 0)} ${unit}`;
+      $(`o-${key}`).textContent = `${k[key].toFixed(st < 1 ? 2 : 0)} ${unitText(unit)}`;
       if (key === "t") renderKeyframesList();
       schedulePath();
     };
@@ -221,7 +233,7 @@ function renderKeyframes() {
 function renderKeyframesList() {
   document.querySelectorAll("#kf-list button").forEach((b) => {
     const k = S.keyframes[+b.dataset.i];
-    b.lastElementChild.textContent = `${k.t.toFixed(1)} s · 源 ${k.src.toFixed(1)} s`;
+    b.lastElementChild.textContent = t("kf.times", { t: k.t.toFixed(1), s: k.src.toFixed(1) });
   });
 }
 
@@ -250,7 +262,8 @@ async function updatePath() {
   if (!S.scene || !S.baseCam) return;
   try {
     S.path = await api(`/api/path/${S.model.key}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(spec()) });
-  } catch (e) { $("estimate").textContent = "轨迹有误：" + e.message; $("render-btn").disabled = true; return; }
+  } catch (e) { S.path = null; S.pathErr = e.info; renderEstimate(); $("render-btn").disabled = true; return; }
+  S.pathErr = null;
   clear(groups.path); clear(groups.kfs);
   const P = S.path.frames.map((f) => new THREE.Vector3(f.c2w[0][3], f.c2w[1][3], f.c2w[2][3]));
   groups.path.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(P), new THREE.LineBasicMaterial({ color: 0xf08a4b })));
@@ -262,27 +275,34 @@ async function updatePath() {
   });
   $("scrub").max = n - 1;
   showFrame(Math.min(+$("scrub").value, n - 1));
-  const e = S.path.estimate;
-  $("estimate").innerHTML = `<span>${n} 帧 · ${$("res").value.replace("x", "×")} · ${fps} fps</span>
-    <span>预计 GPU 约 <b>${e.minutes} 分钟</b>，约 <b>$${e.cost_usd.toFixed(2)}</b>（${e.gpu}，$${e.price_per_hr}/h）</span>
-    ${S.path.too_long ? '<span style="color:var(--bad)">帧数超过 900 帧上限，请缩短时长</span>' : ""}`;
+  renderEstimate();
   $("render-btn").disabled = S.path.too_long || !!S.runningJob;
+}
+
+function renderEstimate() {
+  if (S.pathErr) { $("estimate").textContent = t("path.error", { msg: tErr(S.pathErr) }); return; }
+  if (!S.path) return;
+  const e = S.path.estimate;
+  $("estimate").innerHTML = `<span>${t("est.frames", { n: S.path.frames.length, res: $("res").value.replace("x", "×"), fps: $("fps").value })}</span>
+    <span>${t("est.cost", { m: e.minutes, c: e.cost_usd.toFixed(2), gpu: e.gpu, p: e.price_per_hr })}</span>
+    ${S.path.too_long ? `<span style="color:var(--bad)">${t("est.toolong", { max: 900 })}</span>` : ""}`;
 }
 
 function showFrame(i) {
   if (!S.path) return;
   const f = S.path.frames[i];
   placeCamera(shotCam, f.c2w, f.fov, shotAspect());
-  $("scrub-label").textContent = `${(i / +$("fps").value).toFixed(2)} s · 源 ${f.src.toFixed(2)} s`;
+  S.frameIdx = i;
+  $("scrub-label").textContent = t("scrub", { t: (i / +$("fps").value).toFixed(2), s: f.src.toFixed(2) });
   clear(groups.cursor);
   groups.cursor.add(frustum(f.c2w, f.fov, shotAspect(), S.scene.spacing * 0.8, 0xffffff, 0.9));
 }
 
-$("scrub").oninput = (e) => { S.playing = false; $("play").textContent = "▶ 播放"; showFrame(+e.target.value); };
+$("scrub").oninput = (e) => { S.playing = false; $("play").textContent = t("play"); showFrame(+e.target.value); };
 $("play").onclick = () => {
   if (!S.path) return;
   S.playing = !S.playing;
-  $("play").textContent = S.playing ? "❚❚ 暂停" : "▶ 播放";
+  $("play").textContent = S.playing ? t("pause") : t("play");
   if (S.playing) { if (+$("scrub").value >= S.path.frames.length - 1) $("scrub").value = 0; S.playT0 = performance.now() - (+$("scrub").value / +$("fps").value) * 1000; }
 };
 $("mode-free").onclick = () => setMode("free");
@@ -300,7 +320,7 @@ function confirmModal(title, rows, okText) {
   return new Promise((resolve) => {
     $("modal-title").textContent = title;
     $("modal-body").innerHTML = `<table>${rows.map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`).join("")}</table>
-      <p class="hint">确认后服务器会开一台 GPU（护栏上限 30 分钟），完成后自动关闭。</p>`;
+      <p class="hint">${t("modal.note")}</p>`;
     $("modal-ok").textContent = okText;
     $("modal").hidden = false;
     $("modal-ok").focus();
@@ -311,56 +331,101 @@ function confirmModal(title, rows, okText) {
 
 $("render-btn").onclick = async () => {
   const e = S.path.estimate, st = S.status || {};
-  const ok = await confirmModal("开 GPU 并生成这段运镜？", [
-    ["GPU", `${e.gpu}（$${e.price_per_hr}/h）`], ["帧数", `${S.path.frames.length}（${$("duration").value} 秒）`],
-    ["预计时间", `约 ${e.minutes} 分钟`], ["预计花费", `约 $${e.cost_usd.toFixed(2)}`],
-    ["当前余额", st.balance != null ? `$${st.balance.toFixed(2)}` : "—"]], "开 GPU 并生成");
+  const ok = await confirmModal(t("modal.render.title"), [
+    [t("modal.gpu"), `${e.gpu} ($${e.price_per_hr}/h)`],
+    [t("modal.frames"), t("modal.frames.v", { n: S.path.frames.length, d: $("duration").value })],
+    [t("modal.time"), t("modal.time.v", { m: e.minutes })], [t("modal.cost"), t("modal.cost.v", { c: e.cost_usd.toFixed(2) })],
+    [t("modal.balance"), st.balance != null ? `$${st.balance.toFixed(2)}` : "—"]], t("modal.ok.render"));
   if (!ok) return;
   try { await api(`/api/render/${S.model.key}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...spec(), confirm: true }) }); }
-  catch (err) { alert(err.message); }
+  catch (err) { alert(tErr(err.info)); }
   pollJobs();
 };
 
 $("export-btn").onclick = async () => {
   const e = S.model.export_estimate;
-  const ok = await confirmModal("开 GPU 准备场景预览？", [["GPU", `${e.gpu}（$${e.price_per_hr}/h）`],
-    ["预计时间", `约 ${e.minutes} 分钟`], ["预计花费", `约 $${e.cost_usd.toFixed(2)}`]], "开 GPU 并导出");
+  const ok = await confirmModal(t("modal.export.title"), [[t("modal.gpu"), `${e.gpu} ($${e.price_per_hr}/h)`],
+    [t("modal.time"), t("modal.time.v", { m: e.minutes })], [t("modal.cost"), t("modal.cost.v", { c: e.cost_usd.toFixed(2) })]],
+    t("modal.ok.export"));
   if (!ok) return;
-  try { await api(`/api/scene/${S.model.key}/export`, { method: "POST" }); } catch (err) { alert(err.message); }
+  try { await api(`/api/scene/${S.model.key}/export`, { method: "POST" }); } catch (err) { alert(tErr(err.info)); }
   pollJobs();
 };
 
-const STATE = { queued: "排队中", running: "进行中", done: "完成", failed: "失败" };
+// 任务进度和失败原因：后端只给 code + 参数。旧任务（改版前）只有中文 stage 文本，按 state 显示
+function stageText(j) {
+  if (j.stage_code) {
+    const p = j.stage_params || {};
+    return t("stage." + j.stage_code, p) + (p.fake ? t("stage.fake") : "");
+  }
+  return t("stage." + ({ done: "done", failed: "failed", running: "preparing" }[j.state] || "queued"));
+}
+function jobErrorText(j) {
+  if (j.error_code) return t("jobErr." + j.error_code, j.error_params || {});
+  return j.error ? t("jobErr.unexpected") : "";
+}
+
 async function pollJobs() {
   let d;
   try { d = await api("/api/jobs"); } catch { return; }
   const wasRunning = S.runningJob;
   S.runningJob = d.running;
+  S.jobs = d.jobs;
   $("render-btn").disabled = !S.path || S.path.too_long || !!d.running || !S.model?.scene_ready;
   $("export-btn").disabled = !!d.running;
-  $("jobs").innerHTML = d.jobs.length ? d.jobs.map((j) => `
-    <div class="job">
-      <div class="job-top"><b>${j.kind === "export" ? "准备场景预览" : "运镜渲染"}</b><span class="state ${j.state}">${STATE[j.state] || j.state}</span></div>
-      <div>${j.stage || ""}${j.error ? `：${j.error}` : ""}</div>
-      ${j.state === "running" && j.progress != null ? `<div class="progress"><div style="width:${(j.progress * 100).toFixed(0)}%"></div></div>` : ""}
-      <div class="hint">${j.id}${j.cost_usd != null ? ` · GPU 花费 $${j.cost_usd.toFixed(2)}` : ""}${j.estimate ? ` · 预估 $${j.estimate.cost_usd.toFixed(2)}` : ""}</div>
-      ${j.has_video ? `<video controls preload="metadata" src="/api/jobs/${j.id}/video"></video><a href="/api/jobs/${j.id}/video?download=1">下载视频</a>` : ""}
-      ${j.state === "failed" ? `<a href="/api/jobs/${j.id}/log" target="_blank">查看日志</a>` : ""}
-    </div>`).join("") : '<p class="hint">还没有任务。</p>';
+  renderJobs();
   // 场景导出完成后刷新
   if (wasRunning && !d.running) { const m = await api("/api/models"); S.models = m.models; if (!S.model.scene_ready && S.models.find((x) => x.key === S.model.key)?.scene_ready) selectModel(S.model.key); }
+}
+
+function renderJobs() {
+  const jobs = S.jobs || [];
+  // 只在内容变化时重画，避免正在播放的视频被打断
+  const html = jobs.length ? jobs.map((j) => {
+    const err = jobErrorText(j);
+    return `
+    <div class="job">
+      <div class="job-top"><b>${j.kind === "export" ? t("job.export") : t("job.render")}</b><span class="state ${j.state}">${t("state." + j.state)}</span></div>
+      <div>${err || stageText(j)}</div>
+      ${j.state === "running" && j.progress != null ? `<div class="progress"><div style="width:${(j.progress * 100).toFixed(0)}%"></div></div>` : ""}
+      <div class="hint">${j.id}${j.cost_usd != null ? t("job.cost", { v: j.cost_usd.toFixed(2) }) : ""}${j.estimate ? t("job.estimate", { v: j.estimate.cost_usd.toFixed(2) }) : ""}</div>
+      ${j.has_video ? `<video controls preload="metadata" src="/api/jobs/${j.id}/video"></video><a href="/api/jobs/${j.id}/video?download=1">${t("job.download")}</a>` : ""}
+      ${j.state === "failed" ? `<a href="/api/jobs/${j.id}/log" target="_blank">${t("job.log")}</a>` : ""}
+    </div>`;
+  }).join("") : `<p class="hint">${t("jobs.empty")}</p>`;
+  if (html !== S.jobsHtml) { $("jobs").innerHTML = html; S.jobsHtml = html; }
 }
 
 async function pollStatus() {
   try {
     const st = await api("/api/status");
     S.status = st;
-    $("balance").textContent = st.balance != null ? `余额：$${st.balance.toFixed(2)}` : "余额：—";
-    $("gpu").textContent = st.pods?.length ? `GPU：${st.pods.map((p) => p.name).join("、")} 运行中` : "GPU：未开启";
+    renderStatus();
   } catch { /* 网络抖动时下次再试 */ }
 }
 
-loadModels().catch((e) => { $("estimate").textContent = "加载失败：" + e.message; });
+function renderStatus() {
+  const st = S.status;
+  $("balance").textContent = st?.balance != null ? t("balance", { v: st.balance.toFixed(2) }) : t("balance.none");
+  $("gpu").textContent = !st ? t("gpu.none") : st.pods?.length ? t("gpu.on", { names: st.pods.map((p) => p.name).join(", ") }) : t("gpu.off");
+}
+
+// 切换语言：静态文字由 applyStatic 处理，这里重画动态部分
+function rerender() {
+  if (S.models) renderModelOptions(S.model?.key);
+  document.querySelectorAll(".cam img").forEach((img) => { img.alt = t("cam.alt", { name: img.closest(".cam").dataset.cam }); });
+  $("play").textContent = S.playing ? t("pause") : t("play");
+  if (S.scene && S.keyframes.length) renderKeyframes();
+  if (S.path) showFrame(S.frameIdx ?? 0);
+  renderEstimate();
+  renderJobs();
+  renderStatus();
+}
+document.querySelectorAll("[data-lang]").forEach((b) => b.onclick = () => setLang(b.dataset.lang, rerender));
+applyStatic();
+rerender();
+
+loadModels().catch((e) => { $("estimate").textContent = t("load.error", { msg: tErr(e.info) }); });
 pollJobs(); pollStatus();
 setInterval(pollJobs, 5000);
 setInterval(pollStatus, 30000);

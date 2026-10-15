@@ -389,3 +389,31 @@
 
 **花费**：$0
 
+---
+
+## 运镜工作台改为英文界面，可切换中文（2026-10-15）
+
+**Joey 的要求**：主页面默认英文，右上角 EN / 中文 切换并记住选择；后端只返回 code + 参数，由前端翻译；/showcase 保持全英文。
+
+**做了什么**
+- 新增 `frontend/static/i18n.js`：英文 / 中文两套词典，术语统一为 keyframe、camera path、base camera、confirm & render、scene、render job；选择存 localStorage，读写都包了 try/catch，读不到用英文
+- `index.html`：所有静态文字改成 `data-i18n` 标注；顶栏"结果展示页 ↗"改成 "Results ↗"
+- `app.js`：滑块名、关键帧列表、提示、估算、确认弹窗、任务栏、余额 / GPU 状态全部走 `t()`；切换语言时重画这些动态部分，不打断正在播放的视频
+- `app.py`：错误统一为 `{"code", "params"}`，共 10 种，例如 `job_running`、`too_many_frames {max}`；Flask 自己的 400/404/409 也转成 code
+- `job_runner.py`：进度存 `stage_code` + `stage_params`（例如 `rendering {done, total}`），失败存 `error_code` + `error_params`；技术细节只写进 job.log
+- `models.json` 增加 `title_en`
+- 兼容改版前的旧任务：它们只有中文的 stage 文本，前端按 state 显示，不会露出中文
+
+**测试**（不开 GPU）
+- 端到端：无头 Chromium + DevTools 协议，在模拟模式下用英文走完整流程，共 12 项检查，每一步都扫描页面文字和 title / alt / aria-label，**中文残留 0**，控制台错误 0：
+  - 准备场景（确认弹窗 → 任务）→ 选基准机位 → 加关键帧、改滑块 → 镜头视角播放 → 确认弹窗 → 渲染中 → 结果视频；
+  - 8 种后端错误码的英文翻译；
+  - 新格式的失败任务、改版前的旧任务（含中文 stage）；
+  - 切换中文 / 英文后刷新，选择能记住；
+  - localStorage 被禁用时默认英文、仍能切换
+- 真实数据：在正式服务器上用英文打开，两条旧任务显示为 "Done / Finished"，页面无中文
+- 代码 grep：前端代码里的中文只剩注释、`i18n.js` 的中文词典、"中文"切换按钮本身，以及不会显示在界面上的服务器终端输出和内部日志
+- 轨迹 8、护栏 77、执行器 20 个单元测试全部通过
+
+**花费**：$0
+

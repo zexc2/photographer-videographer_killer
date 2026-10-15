@@ -100,7 +100,7 @@ def build_trajectory(scene, spec):
     spacing = camera_spacing(cams)
     kfs = sorted(spec["keyframes"], key=lambda k: k["t"])
     if not kfs:
-        raise ValueError("至少需要一个关键帧")
+        raise ValueError("no keyframes")   # app.py 已先检查，正常走不到这里
     duration = float(spec["duration"])
     fps = int(spec.get("fps", 30))
     W, H = int(spec["width"]), int(spec["height"])
