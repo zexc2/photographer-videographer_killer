@@ -79,9 +79,12 @@ def ensure_pod(job):
     if mine:
         job.log("复用已在运行的渲染 pod")
         p = mine[0]
-        job.update(stage="复用已开启的 GPU", cost_per_hr=p.get("cost") or 1.79, gpu_started=now().isoformat(timespec="seconds"))
+        job.update(stage="复用已开启的 GPU", cost_per_hr=p.get("cost") or 1.79, gpu_started=now().isoformat(timespec="seconds"),
+                   pod_id=p["id"])
         return
-    job.update(stage="开启 GPU（约 1–2 分钟）")
+    # RunPod 从创建 pod 起就计费，所以在调用 gpu-up 之前开始计时（宁可略微高估）
+    t_start = now().isoformat(timespec="seconds")
+    job.update(stage="开启 GPU（约 1 分钟）")
     rc, out = sh([str(BIN / "gpu-up"), "--name", "render", "--hours", POD_HOURS, "--wait", "10"], timeout=900)
     job.log(out[-1500:])
     if rc != 0:
@@ -93,7 +96,10 @@ def ensure_pod(job):
                 price = float(line.split("$")[1].split("/")[0])
             except (ValueError, IndexError):
                 pass
-    job.update(cost_per_hr=price, gpu_started=now().isoformat(timespec="seconds"))
+    pod_id = next((l.split(":", 1)[1].strip() for l in out.splitlines() if l.startswith("pod ID")), None)
+    if not pod_id:
+        raise RuntimeError("gpu-up 没有返回 pod ID（护栏仍会按时长上限关机）")
+    job.update(cost_per_hr=price, gpu_started=t_start, pod_id=pod_id)
 
 
 def run_on_pod(job, task, args, input_dir=None):
@@ -153,7 +159,10 @@ def run_on_pod(job, task, args, input_dir=None):
 
 
 def stop_pod(job):
-    rc, out = sh([str(BIN / "gpu-down"), POD_NAME], timeout=300)
+    # 按 pod ID 关闭并删除：按名字关，遇到同名的旧 pod 时护栏会拒绝（2026-10-15 实测因此没关掉）。
+    # 结果已拉回服务器，容器盘上没有需要保留的东西，删除可以避免同名 pod 越积越多
+    target = job.st.get("pod_id") or POD_NAME
+    rc, out = sh([str(BIN / "gpu-down"), target, "--delete"], timeout=300)
     job.log(out[-500:])
     job.update(gpu_ended=now().isoformat(timespec="seconds"))
 

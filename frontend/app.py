@@ -68,13 +68,14 @@ def running_job():
 
 
 def estimate(n_frames, width, height, kind="render"):
-    """估算 GPU 时间和花费（分钟）。依据：开 pod ~1.5、恢复环境 ~1.5、复制并加载模型 ~1、编码 + 拉回 ~0.5；
-    渲染速度按 1352×1014 约 15 帧/秒、与像素数成反比估算（第一次真实渲染后用实测值更新）。"""
-    fixed = 4.5
+    """估算 GPU 时间和花费（分钟）。2026-10-15 实测：开 pod 到关 pod 的固定开销约 1.5–2 分钟
+    （开 pod ~35s、恢复 4c4d 环境 + 复制模型 ~40s、加载模型 3s、编码和拉回 ~10s）；
+    960×720 渲染 20.8 帧/秒，按像素数反比估算其他分辨率。导出场景实测约 1.5 分钟。"""
+    fixed = 2.0
     if kind == "export":
-        work = 1.0
+        work = 0.5
     else:
-        fps = 15 * (1352 * 1014) / max(width * height, 1)
+        fps = 20.8 * (960 * 720) / max(width * height, 1)
         work = n_frames / fps / 60
     minutes = fixed + work
     return {"minutes": round(minutes, 1), "cost_usd": round(minutes / 60 * GPU_PRICE, 2),
