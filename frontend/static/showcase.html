@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Results Showcase</title>
+<link rel="stylesheet" href="/static/showcase.css">
+</head>
+<body>
+<main id="deck">
+
+  <section class="slide title-slide" data-name="Title">
+    <p class="kicker">BUS 205 · Final presentation</p>
+    <h1>Fixed cameras in,<br><span class="hl">moving camera</span> out.</h1>
+    <p class="lead">Can AI turn a few tripod cameras into a cinematic camera move — for far less than a $1,500 videographer?</p>
+    <p class="muted small">Phase 1 results on public multi-camera datasets</p>
+  </section>
+
+  <section class="slide" data-name="Camera setup">
+    <p class="kicker">01 · Camera setup</p>
+    <h2>Same 4 input cameras — very different coverage</h2>
+    <div class="two-col">
+      <figure class="layout-card">
+        <figcaption><b>CMU Panoptic</b> <span class="tag bad">spread out</span></figcaption>
+        <svg id="layout-panoptic" class="polar" viewBox="0 0 400 330" role="img" aria-label="Top-down camera layout for CMU Panoptic"></svg>
+        <p class="stat" id="stat-panoptic"></p>
+        <div class="thumbs" id="thumbs-panoptic"></div>
+      </figure>
+      <figure class="layout-card">
+        <figcaption><b>N3V (paper dataset)</b> <span class="tag good">concentrated</span></figcaption>
+        <svg id="layout-n3v" class="polar" viewBox="0 0 400 330" role="img" aria-label="Top-down camera layout for N3V"></svg>
+        <p class="stat" id="stat-n3v"></p>
+        <div class="thumbs" id="thumbs-n3v"></div>
+      </figure>
+    </div>
+    <p class="legend"><i class="dot input"></i> input camera <i class="dot eval"></i> evaluation camera (never seen in training) <i class="dot other"></i> other camera · top-down view, subject in the centre</p>
+  </section>
+
+  <section class="slide" data-name="GEN3C vs 4C4D">
+    <p class="kicker">02 · GEN3C vs 4C4D</p>
+    <h2>Same camera path, two approaches</h2>
+    <div class="video-labels"><span><b class="c-gen3c">GEN3C</b> · 1 camera, video diffusion</span><span><b class="c-4c4d">4C4D</b> · 4 cameras, 4D reconstruction</span></div>
+    <video class="wide" data-src="side_by_side.mp4" muted loop playsinline preload="auto"></video>
+    <p class="caption">Watch the second half: GEN3C invents a second person, while 4C4D keeps one consistent person — just softer.</p>
+  </section>
+
+  <section class="slide" data-name="Ground-truth check">
+    <p class="kicker">03 · Ground-truth check</p>
+    <h2>Compared against a real camera the models never saw</h2>
+    <div class="tri-wrap">
+      <div class="tri-head"><span>Real camera</span><span>Generated</span><span>Difference ×3</span></div>
+      <div class="tri">
+        <p class="tri-label"><b class="c-gen3c">GEN3C</b> <span class="metrics" id="m-gen3c"></span></p>
+        <video data-src="gt_gen3c.mp4" muted loop playsinline preload="auto"></video>
+        <p class="caption">Watch the middle: the view drifts off and a ghost figure appears.</p>
+      </div>
+      <div class="tri">
+        <p class="tri-label"><b class="c-4c4d">4C4D</b> <span class="metrics" id="m-4c4d"></span></p>
+        <video data-src="gt_4c4d.mp4" muted loop playsinline preload="auto"></video>
+        <p class="caption">Watch the difference map: much darker — the view stays aligned, and errors sit on the moving person.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="slide" data-name="N3V reproduction">
+    <p class="kicker">04 · N3V reproduction</p>
+    <h2>With concentrated cameras, we match the paper</h2>
+    <div class="media-row">
+      <div class="media-main">
+        <video data-src="n3v_arc.mp4" muted loop playsinline preload="auto"></video>
+        <p class="caption">Watch the camera sweep across the kitchen while the flame and hands stay sharp.</p>
+      </div>
+      <div class="media-side">
+        <table class="metric-table">
+          <thead><tr><th>Metric</th><th>Ours</th><th>Paper</th></tr></thead>
+          <tbody id="n3v-table"></tbody>
+        </table>
+        <p class="muted small">Official 4C4D setup · scene <i>flame_steak</i> · 4 training cameras · all other cameras held out</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="slide" data-name="Workbench output">
+    <p class="kicker">05 · Workbench output</p>
+    <h2>Designed in the browser, rendered on demand</h2>
+    <div class="media-row">
+      <div class="media-main">
+        <video data-src="workbench.mp4" muted loop playsinline preload="auto"></video>
+        <p class="caption">Watch the camera glide to the right and turn slightly left while the cooking continues.</p>
+      </div>
+      <div class="media-side cards">
+        <div class="card"><span class="muted">Camera move</span><b>Start at cam00 → move right 2 camera-spacings, turn left 10°</b></div>
+        <div class="card"><span class="muted">Prepare scene (once)</span><b class="num" id="wb-prepare"></b></div>
+        <div class="card"><span class="muted">Render this 4-second clip</span><b class="num" id="wb-render"></b></div>
+        <p class="muted small">Measured on one A100 80GB GPU, start to shutdown</p>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<nav class="pager" aria-label="Slides">
+  <span id="pager-name"></span>
+  <span id="pager-num" class="num"></span>
+</nav>
+<div id="keyhint" class="keyhint">← → to navigate · F for full screen</div>
+
+<script src="/static/showcase.js"></script>
+</body>
+</html>

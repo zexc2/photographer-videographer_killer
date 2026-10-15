@@ -8,6 +8,7 @@ ATLAS_FRONTEND_FAKE=1 时不开 GPU，用合成场景和测试视频（测试界
 import json
 import math
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -105,6 +106,30 @@ def start_job(kind, model, spec_extra=None, traj_obj=None):
 @app.get("/")
 def index():
     return send_from_directory(APP / "static", "index.html")
+
+
+# ---------------------------------------------------------------- 结果展示页（课堂录屏用）
+SHOWCASE = DATA / "showcase"
+
+
+@app.get("/showcase")
+def showcase():
+    return send_from_directory(APP / "static", "showcase.html")
+
+
+@app.get("/showcase/data.json")
+def showcase_data():
+    p = SHOWCASE / "showcase.json"
+    if not p.exists():
+        abort(404, "还没有生成展示素材：python3 frontend/showcase_build.py")
+    return send_file(p, mimetype="application/json", max_age=0)
+
+
+@app.get("/showcase/media/<name>")
+def showcase_media(name):
+    if not re.fullmatch(r"[a-z0-9_]+\.(mp4|jpg)", name):
+        abort(404)
+    return send_from_directory(SHOWCASE / "media", name, max_age=3600, conditional=True)
 
 
 # ---------------------------------------------------------------- 模型与场景

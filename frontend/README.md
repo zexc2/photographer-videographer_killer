@@ -39,6 +39,18 @@ ssh -L 8765:127.0.0.1:8765 <用户名>@<服务器地址>
 
 主要是开 pod、恢复环境、复制模型的固定开销，约 1.5 分钟。渲染本身很快：30 秒的运镜（900 帧）预计也只多花约 45 秒。
 
+## 结果展示页（/showcase）
+
+BUS 205 课堂录屏用的英文展示页：深色、大字号、每节一屏，用 ← → / 空格 / PageUp PageDown 切换，F 全屏，`/showcase#3` 直接打开第 3 屏。鼠标静止 2 秒后光标自动隐藏，视频进入画面时从头播放。
+
+内容只来自已有结果，不开 GPU。素材由脚本生成到 `~/atlas_frontend/showcase/`（不在仓库里）：
+
+```bash
+python3 frontend/showcase_build.py   # 转 H.264 + faststart（单个 ≤ 20 MB）、拆机位缩略图、算机位方位角、写 showcase.json
+```
+
+`showcase.json` 只放数字和文件名；脚本会检查里面有没有路径、IP、ID，有就停下。
+
 ## 结构
 
 | 文件 | 作用 |
@@ -48,6 +60,7 @@ ssh -L 8765:127.0.0.1:8765 <用户名>@<服务器地址>
 | `job_runner.py` | 独立进程：开 pod → 推送任务 → 跟踪进度和花费 → 拉回结果 → 关 pod（都通过护栏） |
 | `static/` | 页面：three.js 点云预览、关键帧编辑 |
 | `fake_scene.py` | 模拟模式用的合成场景 |
+| `showcase_build.py` + `static/showcase.*` | 结果展示页（课堂录屏用） |
 | `../pod/tools/fourc4d_direct.py` | pod 上直接用模型导出场景 / 按轨迹渲染，不需要训练数据集 |
 | `../pod/configs/models.json` | 可用的模型列表（模型放在 Global volume 的 `models/<名字>/`） |
 

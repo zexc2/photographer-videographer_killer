@@ -1,0 +1,85 @@
+/* 课堂投影用：深色背景、大字号、每节一屏。橙色 = 4C4D / 输入机位，蓝色 = GEN3C */
+:root {
+  --bg: #0b0f10; --panel: #151b1d; --line: #26302e; --fg: #eef2f0; --muted: #9aa6a0;
+  --accent: #f08a4b; --gen3c: #7cb2ff; --good: #6cc38a; --bad: #ec7c7c;
+  --font: "Inter", "Segoe UI", "Helvetica Neue", Arial, system-ui, sans-serif;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font-family: var(--font); }
+body.idle, body.idle * { cursor: none !important; }
+#deck { height: 100vh; overflow-y: scroll; scroll-snap-type: y mandatory; scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { #deck { scroll-behavior: auto; } }
+
+.slide { min-height: 100vh; height: 100vh; scroll-snap-align: start; padding: 4.5vh 5vw 7vh; display: flex; flex-direction: column; gap: 1.6vh; overflow: hidden; }
+.kicker { margin: 0; color: var(--accent); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; font-size: clamp(14px, 1.25vw, 22px); }
+h1 { margin: 0; font-size: clamp(40px, 6vw, 108px); line-height: 1.05; letter-spacing: -.02em; }
+h2 { margin: 0 0 .6vh; font-size: clamp(28px, 3.1vw, 58px); line-height: 1.1; letter-spacing: -.01em; }
+.hl { color: var(--accent); }
+.lead { font-size: clamp(20px, 2vw, 36px); max-width: 32ch; color: var(--fg); margin: 2vh 0 0; line-height: 1.35; }
+.muted { color: var(--muted); }
+.small { font-size: clamp(13px, 1.05vw, 19px); margin: 0; }
+.num { font-variant-numeric: tabular-nums; }
+.caption { margin: 0; font-size: clamp(18px, 1.6vw, 30px); line-height: 1.3; }
+.caption::before { content: "▸ "; color: var(--accent); }
+.c-gen3c { color: var(--gen3c); } .c-4c4d { color: var(--accent); }
+.title-slide { justify-content: center; gap: 2vh; }
+
+video { display: block; width: 100%; background: #000; border-radius: 10px; }
+video.wide { max-height: 58vh; object-fit: contain; }
+
+/* 01 机位 */
+.two-col { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 3vw; }
+.layout-card { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 2vh 1.6vw; display: flex; flex-direction: column; gap: 1vh; min-height: 0; }
+.layout-card figcaption { font-size: clamp(18px, 1.7vw, 32px); display: flex; align-items: center; gap: 12px; }
+.tag { font-size: .6em; font-weight: 700; padding: 2px 10px; border-radius: 999px; border: 2px solid currentColor; text-transform: uppercase; letter-spacing: .06em; }
+.tag.bad { color: var(--bad); } .tag.good { color: var(--good); }
+.polar { width: 100%; flex: 1; min-height: 0; }
+.polar text { fill: var(--fg); font-family: var(--font); }
+.stat { margin: 0; font-size: clamp(16px, 1.45vw, 28px); }
+.stat b { color: var(--accent); }
+.thumbs { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.thumb { position: relative; margin: 0; }
+.thumb img { display: block; width: 100%; aspect-ratio: 480 / 236; object-fit: cover; border-radius: 6px; border: 3px solid transparent; }
+.thumb.input img { border-color: var(--accent); } .thumb.eval img { border-color: #fff; }
+.thumb span { position: absolute; left: 6px; bottom: 6px; font-size: clamp(10px, .8vw, 15px); font-weight: 700; background: rgba(0,0,0,.7); padding: 1px 6px; border-radius: 4px; }
+.legend { margin: 0; color: var(--muted); font-size: clamp(14px, 1.15vw, 21px); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.dot { display: inline-block; width: .8em; height: .8em; border-radius: 50%; }
+.dot.input { background: var(--accent); } .dot.eval { background: transparent; border: 3px solid #fff; } .dot.other { background: #5b6762; }
+
+/* 02 */
+.video-labels { display: grid; grid-template-columns: 1fr 1fr; font-size: clamp(18px, 1.6vw, 30px); }
+.video-labels span:last-child { padding-left: 1vw; }
+
+/* 03 三联 */
+.tri-head { display: grid; grid-template-columns: repeat(3, 1fr); text-align: center; color: var(--muted); font-size: clamp(15px, 1.3vw, 24px); font-weight: 600; margin-top: .5vh; }
+.tri-wrap { width: min(100%, 131vh); margin: 0 auto; display: flex; flex-direction: column; gap: 1.4vh; }
+.tri { display: flex; flex-direction: column; gap: .8vh; }
+.tri video { aspect-ratio: 1440 / 264; height: auto; }
+.tri-label { margin: 0; font-size: clamp(18px, 1.6vw, 30px); display: flex; gap: 18px; align-items: baseline; }
+.metrics { color: var(--muted); font-size: .8em; font-variant-numeric: tabular-nums; }
+
+/* 04 / 05 */
+.media-row { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: 3vw; align-items: start; }
+.media-main { display: flex; flex-direction: column; gap: 1.4vh; min-height: 0; }
+.media-main video { max-height: 62vh; object-fit: contain; }
+.media-side { display: flex; flex-direction: column; gap: 1.6vh; }
+.metric-table { border-collapse: collapse; width: 100%; font-size: clamp(18px, 1.7vw, 32px); font-variant-numeric: tabular-nums; }
+.metric-table th { text-align: right; color: var(--muted); font-weight: 600; padding: .6vh .8vw; border-bottom: 2px solid var(--line); font-size: .75em; }
+.metric-table th:first-child, .metric-table td:first-child { text-align: left; }
+.metric-table td { text-align: right; padding: 1.1vh .8vw; border-bottom: 1px solid var(--line); }
+.metric-table td.ours { color: var(--accent); font-weight: 700; }
+.metric-table td.better::after { content: " ✓"; color: var(--good); font-size: .7em; }
+.cards .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 1.8vh 1.4vw; display: flex; flex-direction: column; gap: .6vh; }
+.card span { font-size: clamp(14px, 1.15vw, 21px); }
+.card b { font-size: clamp(20px, 1.9vw, 36px); line-height: 1.25; }
+
+/* 页码 */
+.pager { position: fixed; right: 2vw; bottom: 2vh; display: flex; gap: 14px; color: var(--muted); font-size: clamp(13px, 1vw, 18px); pointer-events: none; }
+.keyhint { position: fixed; left: 50%; bottom: 2vh; transform: translateX(-50%); color: var(--muted); font-size: clamp(13px, 1vw, 18px); background: var(--panel); border: 1px solid var(--line); padding: 6px 14px; border-radius: 999px; transition: opacity .6s; }
+.keyhint.gone { opacity: 0; }
+
+@media (max-width: 900px) {
+  .slide { height: auto; min-height: 100vh; }
+  .two-col, .media-row { grid-template-columns: 1fr; }
+}

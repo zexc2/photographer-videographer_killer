@@ -1,0 +1,144 @@
+// /showcase：课堂录屏用的结果展示页。数据来自 /showcase/data.json（showcase_build.py 生成，只含数字和文件名）
+"use strict";
+
+const deck = document.getElementById("deck");
+const slides = [...document.querySelectorAll(".slide")];
+const MEDIA = "/showcase/media/";
+const fmt = (v, d) => Number(v).toFixed(d);
+
+// ---------------------------------------------------------------- 翻页
+function current() {
+  const y = deck.scrollTop + deck.clientHeight / 2;
+  let i = 0;
+  slides.forEach((s, k) => { if (s.offsetTop <= y) i = k; });
+  return i;
+}
+function go(i) { slides[Math.max(0, Math.min(slides.length - 1, i))].scrollIntoView(); }
+document.addEventListener("keydown", (e) => {
+  if (e.altKey || e.ctrlKey || e.metaKey) return;
+  const k = e.key;
+  if (["ArrowRight", "ArrowDown", "PageDown", " "].includes(k)) { e.preventDefault(); go(current() + 1); }
+  else if (["ArrowLeft", "ArrowUp", "PageUp"].includes(k)) { e.preventDefault(); go(current() - 1); }
+  else if (k === "Home") { e.preventDefault(); go(0); }
+  else if (k === "End") { e.preventDefault(); go(slides.length - 1); }
+  else if (k === "f" || k === "F") {
+    if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen?.();
+  }
+});
+function updatePager() {
+  const i = current();
+  document.getElementById("pager-num").textContent = `${i + 1} / ${slides.length}`;
+  document.getElementById("pager-name").textContent = slides[i].dataset.name;
+}
+deck.addEventListener("scroll", updatePager, { passive: true });
+setTimeout(() => document.getElementById("keyhint").classList.add("gone"), 4000);
+
+// 鼠标静止 2 秒后隐藏光标（录屏更干净）
+let idleTimer;
+document.addEventListener("mousemove", () => {
+  document.body.classList.remove("idle");
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => document.body.classList.add("idle"), 2000);
+});
+
+// ---------------------------------------------------------------- 视频：进入画面时从头播放，离开时暂停
+const videos = [...document.querySelectorAll("video[data-src]")];
+videos.forEach((v) => { v.src = MEDIA + v.dataset.src; });
+const io = new IntersectionObserver((entries) => {
+  entries.forEach((en) => {
+    en.target.querySelectorAll("video").forEach((v) => {
+      if (en.isIntersecting) { v.currentTime = 0; v.play().catch(() => {}); } else v.pause();
+    });
+  });
+}, { root: deck, threshold: 0.55 });
+slides.forEach((s) => io.observe(s));
+
+// ---------------------------------------------------------------- 机位俯视图
+const SVGNS = "http://www.w3.org/2000/svg";
+function el(tag, attrs, parent, text) {
+  const n = document.createElementNS(SVGNS, tag);
+  Object.entries(attrs).forEach(([k, v]) => n.setAttribute(k, v));
+  if (text != null) n.textContent = text;
+  parent.appendChild(n);
+  return n;
+}
+function drawLayout(svg, layout) {
+  // 0° = 机位平均所在方向，画在下方；R = 半径
+  const cx = 200, cy = 150, R = 100;
+  const pos = (az, r = R) => [cx + r * Math.sin((az * Math.PI) / 180), cy + r * Math.cos((az * Math.PI) / 180)];
+  const inputs = layout.cams.filter((c) => c.role === "input").map((c) => c.az).sort((a, b) => a - b);
+  const [a0, a1] = [inputs[0], inputs[inputs.length - 1]];
+  // 输入机位覆盖的扇形
+  const [x0, y0] = pos(a0), [x1, y1] = pos(a1);
+  el("path", { d: `M${cx},${cy} L${x0},${y0} A${R},${R} 0 ${a1 - a0 > 180 ? 1 : 0} 0 ${x1},${y1} Z`,
+               fill: "rgba(240,138,75,.16)", stroke: "rgba(240,138,75,.5)", "stroke-width": 1.5 }, svg);
+  el("circle", { cx, cy, r: R, fill: "none", stroke: "#26302e", "stroke-width": 2, "stroke-dasharray": "4 6" }, svg);
+  // 主体
+  el("circle", { cx, cy, r: 9, fill: "#eef2f0" }, svg);
+  el("text", { x: cx, y: cy - 16, "text-anchor": "middle", "font-size": 13, fill: "#9aa6a0" }, svg, "subject");
+  // 机位：灰色先画，输入和评估机位后画在上层
+  const order = { other: 0, input: 1, eval: 2 };
+  // 标签放在外圈，按方位角排开、相邻至少 MIN_GAP 度；被挪开的标签画一条引线回到机位
+  const MIN_GAP = 25, LR = R + 52;   // 25° 在 LR 半径上约 66 px，够放下一个 "cam00"
+  const labeled = layout.cams.filter((c) => c.role !== "other").sort((a, b) => a.az - b.az);
+  const la = labeled.map((c) => c.az);
+  for (let it = 0; it < 50; it++) {
+    for (let i = 1; i < la.length; i++) {
+      const d = la[i] - la[i - 1];
+      if (d < MIN_GAP) { const push = (MIN_GAP - d) / 2; la[i - 1] -= push; la[i] += push; }
+    }
+  }
+  const labelAz = Object.fromEntries(labeled.map((c, i) => [c.name, la[i]]));
+  [...layout.cams].sort((a, b) => order[a.role] - order[b.role]).forEach((c) => {
+    const [x, y] = pos(c.az);
+    // 指向主体的小三角
+    const ang = Math.atan2(cy - y, cx - x), s = c.role === "other" ? 6 : 10;
+    const pts = [[s * 1.4, 0], [-s, -s * 0.8], [-s, s * 0.8]].map(([px, py]) =>
+      `${x + px * Math.cos(ang) - py * Math.sin(ang)},${y + px * Math.sin(ang) + py * Math.cos(ang)}`).join(" ");
+    const style = c.role === "input" ? { fill: "#f08a4b" } : c.role === "eval" ? { fill: "#0b0f10", stroke: "#fff", "stroke-width": 3 } : { fill: "#5b6762" };
+    el("polygon", { points: pts, ...style }, svg);
+    if (c.role !== "other") {
+      const color = c.role === "input" ? "#f08a4b" : "#ffffff";
+      const [lx, ly] = pos(labelAz[c.name], LR);
+      const [ex, ey] = pos(c.az, R + 14), [sx, sy] = pos(labelAz[c.name], LR - 14);
+      el("line", { x1: ex, y1: ey, x2: sx, y2: sy, stroke: color, "stroke-width": 1.2, opacity: 0.6 }, svg);
+      el("text", { x: lx, y: ly + 5, "text-anchor": "middle", "font-size": 14, "font-weight": 700, fill: color }, svg, c.name);
+    }
+  });
+}
+function thumbs(box, prefix, cams) {
+  box.innerHTML = cams.map(([name, role]) =>
+    `<figure class="thumb ${role}"><img alt="${name} view" src="${MEDIA}${prefix}_${name}.jpg"><span>${name} · ${role === "eval" ? "EVAL" : "INPUT"}</span></figure>`).join("");
+}
+
+// ---------------------------------------------------------------- 数据
+fetch("/showcase/data.json").then((r) => r.json()).then((d) => {
+  const P = d.layout.panoptic, N = d.layout.n3v;
+  drawLayout(document.getElementById("layout-panoptic"), P);
+  drawLayout(document.getElementById("layout-n3v"), N);
+  document.getElementById("stat-panoptic").innerHTML = `Inputs span <b>${fmt(P.input_span, 0)}°</b> · widest gap <b>${fmt(P.input_gap, 0)}°</b>`;
+  document.getElementById("stat-n3v").innerHTML = `Inputs span <b>${fmt(N.input_span, 0)}°</b> · widest gap <b>${fmt(N.input_gap, 0)}°</b>`;
+  thumbs(document.getElementById("thumbs-panoptic"), "pan", P.cams.filter((c) => c.role !== "other").map((c) => [c.name, c.role]));
+  thumbs(document.getElementById("thumbs-n3v"), "n3v", N.cams.filter((c) => c.role !== "other").map((c) => [c.name, c.role]));
+
+  const m = (x) => `PSNR ${fmt(x.psnr, 2)} · SSIM ${fmt(x.ssim, 3)} · LPIPS ${fmt(x.lpips, 3)}`;
+  document.getElementById("m-gen3c").textContent = m(d.metrics.gen3c);
+  document.getElementById("m-4c4d").textContent = m(d.metrics.fourc4d);
+
+  const o = d.n3v.ours, p = d.n3v.paper;
+  const rows = [["PSNR ↑", o.psnr, p.psnr, 2, true], ["DSSIM₁ ↓", o.dssim1, p.dssim1, 4, false],
+                ["DSSIM₂ ↓", o.dssim2, p.dssim2, 4, false], ["LPIPS ↓", o.lpips, p.lpips, 4, false]];
+  document.getElementById("n3v-table").innerHTML = rows.map(([name, a, b, dg, hi]) => {
+    const better = hi ? a > b : a < b;
+    return `<tr><td>${name}</td><td class="ours ${better ? "better" : ""}">${fmt(a, dg)}</td><td>${b}</td></tr>`;
+  }).join("");
+
+  const w = d.workbench;
+  document.getElementById("wb-prepare").textContent = `${w.prepare.minutes} min · $${w.prepare.usd}`;
+  document.getElementById("wb-render").textContent = `${w.render.minutes} min · $${w.render.usd}`;
+});
+updatePager();
+
+// /showcase#3 直接打开第 3 屏（录屏时从某一节重来很方便）
+const startAt = parseInt(location.hash.slice(1), 10);
+if (startAt > 0) { deck.style.scrollBehavior = "auto"; go(startAt - 1); deck.style.scrollBehavior = ""; updatePager(); }
