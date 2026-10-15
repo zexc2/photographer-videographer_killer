@@ -132,6 +132,11 @@ cp "$CFG" "$OUT/config_used.yaml"
 CKPT=$MODEL/run/chkpnt_best.pth
 [ -f "$CKPT" ] || die "训练没有产出 checkpoint"
 vol_sync "$OUT/" "$ATLAS_RESULTS/$(basename "$RUN_DIR")/" && log "模型已同步到 Global volume"
+# 同时放到固定位置，供前端（pod/configs/models.json 的 n3v_<场景>）直接使用
+mkdir -p "$ATLAS_CACHE/publish/n3v_$SCENE"
+cp "$CKPT" "$ATLAS_CACHE/publish/n3v_$SCENE/model.pth"
+cp "$CFG" "$ATLAS_CACHE/publish/n3v_$SCENE/config.yaml"
+vol_sync "$ATLAS_CACHE/publish/n3v_$SCENE/" "$ATLAS_VOL/models/n3v_$SCENE/" && log "前端模型已放到 Global volume models/n3v_$SCENE/"
 done_step
 
 # ---------------------------------------------------------------- 4. 官方运镜渲染（--traj arc）

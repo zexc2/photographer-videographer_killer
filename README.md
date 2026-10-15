@@ -3,6 +3,21 @@
 > 360 / 多机位素材 → AI 场景重建 → "游机位"运镜视频
 > ERA MOMENT 内部验证项目 · USF BUS 205 课程项目
 
+## 快速开始
+
+想自己跑起来？看 **[DEPLOY.md](DEPLOY.md)**，6 步完成：
+
+1. 注册 [RunPod](https://www.runpod.io/) 并充值，**推荐机型 A100 80GB**；
+2. 建 Global volume 和 API key；
+3. 克隆仓库；
+4. 运行 `./deploy.sh`；
+5. 训练样例模型（一次性，约 4 小时、约 $8）；
+6. 打开运镜工作台。
+
+之后每渲染一段运镜，约 1.5 分钟、$0.05。
+
+![流程](docs/workflow.svg)
+
 ## 项目背景
 
 ERA MOMENT 做活动摄影摄像。美国 8 小时活动摄像师报价很少低于 **$1500**。
@@ -18,7 +33,7 @@ ERA MOMENT 做活动摄影摄像。美国 8 小时活动摄像师报价很少低
 | 2 | pod 环境脚本（GEN3C / ViPE / 4C4D），见 [pod/](pod/README.md) | ✅ |
 | 3 | CMU Panoptic 数据准备，见 [docs/stage3-data.md](docs/stage3-data.md) | ✅ |
 | 4 | GEN3C vs 4C4D 基线对比，**报告见 [docs/report-baseline.md](docs/report-baseline.md)** | ✅ 第一轮完成 |
-| 5 | Flask 前端：3D 预览 → 设定运镜 → 生成，见 [frontend/](frontend/README.md) | 🔧 样例场景版完成，待真实 GPU 测试；上传素材待做 |
+| 5 | 运镜工作台（Flask）：3D 预览 → 设定运镜 → GPU 渲染，见 [frontend/](frontend/README.md) | ✅ 样例场景版（真实 GPU 测试通过）；上传素材待做 |
 | 6 | 接入 360 转透视工具 | ⏳ |
 
 详细进度、问题、耗时与花费见 [PROGRESS.md](PROGRESS.md)。
@@ -44,18 +59,21 @@ ERA MOMENT 做活动摄影摄像。美国 8 小时活动摄像师报价很少低
 - **pod 容器盘**（`$ATLAS_LOCAL`，200 GB，stop 后清空）：conda 环境、工作目录、中间文件、checkpoint。
 - 详见 [docs/storage-and-env.md](docs/storage-and-env.md)。
 
-## 目录结构（随阶段补充）
+## 目录结构
 
 ```
 .
-├── README.md       项目说明
-├── PROGRESS.md     每阶段进度记录
-├── CLAUDE.md       项目简报 / 工作约定
-├── docs/           设计与决策文档
-├── frontend/       运镜工作台（Flask，只监听 127.0.0.1）
-├── pod/            pod 端脚本：环境安装（GEN3C / ViPE / 4C4D）、任务包装
-├── runner/         atlas-run：服务器 → pod 的任务执行器
-└── guard/          GPU 护栏：gpu-up / gpu-down / gpu-status / gpu-guard + 离线测试
+├── DEPLOY.md         部署指南（从注册 RunPod 开始）
+├── deploy.sh         一键部署 / 自检（./deploy.sh --check）
+├── requirements.txt  服务器端 Python 依赖（flask、numpy）
+├── README.md         项目说明
+├── PROGRESS.md       每阶段进度、问题、耗时、花费
+├── CLAUDE.md         项目简报 / 工作约定
+├── frontend/         运镜工作台（Flask + three.js，只监听 127.0.0.1）
+├── guard/            GPU 护栏：gpu-up / gpu-down / gpu-status / gpu-guard + 离线测试
+├── runner/           atlas-run：服务器 → pod 的任务执行器
+├── pod/              pod 端：环境安装（GEN3C / ViPE / 4C4D）、任务脚本、模型列表
+└── docs/             报告与设计文档
 ```
 
 ## 第三方模型与数据许可

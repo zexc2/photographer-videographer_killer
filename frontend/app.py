@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ATLAS 运镜工作台（Flask，只监听 127.0.0.1）。
 
-访问：在自己电脑上 ssh -L 8765:127.0.0.1:8765 atlas@<服务器>，然后打开 http://localhost:8765
+访问：在自己电脑上 ssh -L 8765:127.0.0.1:8765 <用户名>@<服务器>，然后打开 http://localhost:8765
 数据目录（不进仓库）：~/atlas_frontend/{scenes,jobs}
 ATLAS_FRONTEND_FAKE=1 时不开 GPU，用合成场景和测试视频（测试界面用）。
 """

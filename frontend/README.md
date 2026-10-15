@@ -1,22 +1,22 @@
 # ATLAS 运镜工作台（阶段 5，样例：4C4D 训练好的模型）
 
-在浏览器里选一个固定机位，用关键帧设置运镜，确认后由 GPU 渲染出视频。现在内置一个样例场景：N3V flame_steak（4 机位训练的 4C4D 模型，见 [docs/reproduction-n3v.md](../docs/reproduction-n3v.md)）。
+在浏览器里选一个固定机位，用关键帧设置运镜，确认后由 GPU 渲染出视频。**第一次部署请先看 [DEPLOY.md](../DEPLOY.md)。**现在内置一个样例场景：N3V flame_steak（4 机位训练的 4C4D 模型，见 [docs/reproduction-n3v.md](../docs/reproduction-n3v.md)）。
 
 ## 怎么打开
 
 服务器上只监听 `127.0.0.1:8765`，不对外开放端口。在**自己电脑**上建一个 SSH 隧道：
 
 ```bash
-ssh -L 8765:127.0.0.1:8765 atlas@<服务器地址>
+ssh -L 8765:127.0.0.1:8765 <用户名>@<服务器地址>
 ```
 
 保持这个窗口开着，浏览器打开 **http://localhost:8765**。
 
-服务器重启后会自动启动（atlas 的 crontab `@reboot`）。手动重启：`~/app/frontend/run.sh`，日志在 `~/logs/frontend.log`。
+服务器重启后会自动启动（当前用户 crontab 里的 `@reboot`，由 `deploy.sh` 设置）。手动重启：`~/app/frontend/run.sh`，日志在 `~/logs/frontend.log`。
 
 ## 怎么用
 
-1. **第一次使用要准备场景预览**：点"准备场景预览"，会开一次 GPU，从模型里导出点云、21 个机位和每个机位的缩略图，约 1.5 分钟、$0.04。每个场景只需做一次（样例场景已经准备好了）。
+1. **第一次使用要准备场景预览**：点"准备场景预览"，会开一次 GPU，从模型里导出点云、21 个机位和每个机位的缩略图，约 1.5 分钟、$0.04。每个场景只需做一次。前提是已经按 DEPLOY.md 第 5 步训练好样例模型。
 2. **选一个固定机位作为起点**（右侧缩略图；带 ★ 的是训练用的 4 个机位）。
 3. **设置运镜**：
    - 总时长、帧率、分辨率；
@@ -49,7 +49,7 @@ ssh -L 8765:127.0.0.1:8765 atlas@<服务器地址>
 | `static/` | 页面：three.js 点云预览、关键帧编辑 |
 | `fake_scene.py` | 模拟模式用的合成场景 |
 | `../pod/tools/fourc4d_direct.py` | pod 上直接用模型导出场景 / 按轨迹渲染，不需要训练数据集 |
-| `../pod/configs/models.json` | 可用的模型列表 |
+| `../pod/configs/models.json` | 可用的模型列表（模型放在 Global volume 的 `models/<名字>/`） |
 
 **模拟模式**（测试界面，不开 GPU）：`ATLAS_FRONTEND_FAKE=1 ATLAS_FRONTEND_PORT=8766 python3 frontend/app.py`
 
@@ -58,6 +58,6 @@ ssh -L 8765:127.0.0.1:8765 atlas@<服务器地址>
 ## 安全
 
 - 只监听 127.0.0.1，不改 Caddy、不开公网端口。
-- 同一时间只允许一个 GPU 任务；另有其他 atlas 任务在用 GPU 时拒绝。
+- 同一时间只允许一个 GPU 任务；另有其他 atlas- 任务在用 GPU 时拒绝。
 - 每次开 GPU 前页面都会弹窗确认并显示预计花费。所有开关 pod 都走护栏（gpu-up / gpu-down），时长上限、空闲检测、任务结束自动关机照常生效。
 - 单次最多 900 帧、分辨率不超过 1600×1200。

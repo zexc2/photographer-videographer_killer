@@ -1,2 +1,2 @@
-# atlas 用户 crontab：GPU 护栏巡检，每 10 分钟一次（安装：guard/install.sh）
-*/10 * * * * PATH=/home/atlas/.local/bin:/usr/bin:/bin flock -n /home/atlas/.local/state/atlas-gpu.lock /home/atlas/bin/gpu-guard >> /home/atlas/logs/gpu-guard.cron.log 2>&1
+# GPU 护栏巡检，每 10 分钟一次。这是模板：install.sh 安装时替换成本机的家目录和 PATH
+*/10 * * * * PATH=@PATH@ flock -n @HOME@/.local/state/atlas-gpu.lock @HOME@/bin/gpu-guard >> @HOME@/logs/gpu-guard.cron.log 2>&1
