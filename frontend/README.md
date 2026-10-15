@@ -1,84 +1,84 @@
-# ATLAS 运镜工作台（阶段 5，样例：4C4D 训练好的模型）
+# ATLAS camera-move workbench (stage 5, sample: a trained 4C4D model)
 
-在浏览器里选一个固定机位，用关键帧设置运镜，确认后由 GPU 渲染出视频。**第一次部署请先看 [DEPLOY.md](../DEPLOY.md)。**现在内置一个样例场景：N3V flame_steak（4 机位训练的 4C4D 模型，见 [docs/reproduction-n3v.md](../docs/reproduction-n3v.md)）。
+Pick a base camera in the browser, set a camera move with keyframes, and after you confirm, a GPU renders the video. **For a first deployment, read [DEPLOY.md](../DEPLOY.md) first.** One sample scene is built in: N3V flame_steak (a 4C4D model trained on 4 cameras; see [docs/reproduction-n3v.md](../docs/reproduction-n3v.md)).
 
-## 怎么打开
+## How to open it
 
-服务器上只监听 `127.0.0.1:8765`，不对外开放端口。在**自己电脑**上建一个 SSH 隧道：
-
-```bash
-ssh -L 8765:127.0.0.1:8765 <用户名>@<服务器地址>
-```
-
-保持这个窗口开着，浏览器打开 **http://localhost:8765**。
-
-服务器重启后会自动启动（当前用户 crontab 里的 `@reboot`，由 `deploy.sh` 设置）。手动重启：`~/app/frontend/run.sh`，日志在 `~/logs/frontend.log`。
-
-## 界面语言
-
-默认英文，右上角 **EN / 中文** 切换。选择记在浏览器的 localStorage 里；读不到时（隐私模式等）用英文。
-
-- 界面文字都在 `static/i18n.js`（`en` / `zh` 两套），HTML 元素用 `data-i18n` 标注
-- 后端只返回稳定的错误码 `{"code", "params"}`，任务进度和失败原因存为 `stage_code` / `error_code` + 参数，由前端按当前语言翻译
-- `/showcase` 只有英文，不切换
-
-## 怎么用
-
-1. **第一次使用要准备场景预览**：点"准备场景预览"，会开一次 GPU，从模型里导出点云、21 个机位和每个机位的缩略图，约 1.5 分钟、$0.04。每个场景只需做一次。前提是已经按 DEPLOY.md 第 5 步训练好样例模型。
-2. **选一个固定机位作为起点**（右侧缩略图；带 ★ 的是训练用的 4 个机位）。
-3. **设置运镜**：
-   - 总时长、帧率、分辨率；
-   - 关键帧：每个关键帧有"输出时间"、"源视频时间"（用原视频第几秒的动作），以及相对固定机位的右移 / 上移 / 前进（单位"格" = 相邻真实机位的平均间距）、左右转、上下转、视场角；
-   - 关键帧之间自动平滑过渡（位置用平滑曲线，朝向用球面插值，两端缓入缓出）。
-4. **在 3D 视图里检查**：
-   - "自由视角"：拖动旋转、滚轮缩放。灰色线框是真实机位，橙色是关键帧，橙线是路径，白色是当前预览帧；
-   - "镜头视角"：按输出画幅、用点云预览这段运镜，可以播放或拖动时间条。点云只是位置参考，不是最终画面。
-5. **确认生成**：弹窗会显示 GPU 型号、帧数、预计时间和花费、当前余额。点"开 GPU 并生成"后，服务器开一台 A100（护栏上限 30 分钟），渲染完拉回视频并关机。
-6. 在"任务"里看进度和实际花费，完成后可以在线播放或下载。
-
-**提示**：机位覆盖范围之外（比如转到侧面、背面）画质会明显下降；这个样例的 4 个训练机位都在厨房正前方。
-
-## 花费（2026-10-15 实测）
-
-| 操作 | 实测（A100 $1.79/h） |
-|---|---|
-| 准备场景预览（每个场景一次） | 从开 pod 到关 pod 约 1.5 分钟，**$0.04** |
-| 渲染一段 4 秒运镜（120 帧，960×720） | 约 1.5 分钟，**$0.045**；其中渲染本身 5.8 秒（20.8 帧/秒），显存峰值 4.3 GB |
-
-主要是开 pod、恢复环境、复制模型的固定开销，约 1.5 分钟。渲染本身很快：30 秒的运镜（900 帧）预计也只多花约 45 秒。
-
-## 结果展示页（/showcase）
-
-BUS 205 课堂录屏用的英文展示页：深色、大字号、每节一屏，用 ← → / 空格 / PageUp PageDown 切换，F 全屏，`/showcase#3` 直接打开第 3 屏。鼠标静止 2 秒后光标自动隐藏，视频进入画面时从头播放。
-
-内容只来自已有结果，不开 GPU。素材由脚本生成到 `~/atlas_frontend/showcase/`（不在仓库里）：
+On the server it listens only on `127.0.0.1:8765`; no port is exposed publicly. Create an SSH tunnel from **your own computer**:
 
 ```bash
-python3 frontend/showcase_build.py   # 转 H.264 + faststart（单个 ≤ 20 MB）、拆机位缩略图、算机位方位角、写 showcase.json
+ssh -L 8765:127.0.0.1:8765 <username>@<server address>
 ```
 
-`showcase.json` 只放数字和文件名；脚本会检查里面有没有路径、IP、ID，有就停下。
+Keep that window open and open **http://localhost:8765** in your browser.
 
-## 结构
+It starts automatically after a server reboot (`@reboot` in the current user's crontab, set up by `deploy.sh`). To restart manually: `~/app/frontend/run.sh`; the log is at `~/logs/frontend.log`.
 
-| 文件 | 作用 |
+## UI language
+
+English by default; switch with **EN / 中文** in the top-right corner. The choice is saved in the browser's localStorage; if that can't be read (private mode etc.), English is used.
+
+- All UI text lives in `static/i18n.js` (two sets, `en` / `zh`); HTML elements are tagged with `data-i18n`
+- The backend returns only stable error codes `{"code", "params"}`; job progress and failure reasons are stored as `stage_code` / `error_code` + parameters and translated by the frontend into the current language
+- `/showcase` is English only and has no switch
+
+## How to use it
+
+1. **The first time, prepare the scene preview**: click "Prepare scene preview". This starts a GPU once to export the point cloud, 21 cameras and a thumbnail for each camera from the model — about 1.5 minutes, $0.04. Only needed once per scene. It requires the sample model to have been trained per step 5 of DEPLOY.md.
+2. **Pick a base camera as the starting point** (thumbnails on the right; those marked ★ are the 4 training cameras).
+3. **Set the camera move**:
+   - total duration, frame rate, resolution;
+   - keyframes: each keyframe has an "Output time", a "Source time" (which second of the source video's action to use), plus right / up / forward offsets relative to the base camera (unit "sp" = the average spacing between neighboring real cameras), pan, tilt, and field of view;
+   - transitions between keyframes are smoothed automatically (smooth curve for position, spherical interpolation for orientation, ease-in/ease-out at both ends).
+4. **Check it in the 3D view**:
+   - "Free view": drag to rotate, scroll to zoom. Gray wireframes are the real cameras, orange ones are keyframes, the orange line is the path, white is the current preview frame;
+   - "Camera view": previews the camera move with the point cloud at the output aspect ratio; you can play it or scrub the timeline. The point cloud is only a positional reference, not the final image.
+5. **Confirm & render**: a dialog shows the GPU model, frame count, estimated time and cost, and current balance. After you click "Start GPU & render", the server starts an A100 (guard limit 30 minutes), renders, pulls the video back and shuts the pod down.
+6. Watch progress and actual cost under "Render jobs"; when done you can play the video online or download it.
+
+**Tip**: image quality drops noticeably outside the area covered by the cameras (e.g. turning to the side or back); in this sample all 4 training cameras are directly in front of the kitchen.
+
+## Cost (measured 2026-10-15)
+
+| Operation | Measured (A100 $1.79/h) |
 |---|---|
-| `app.py` | Flask 后端：场景数据、轨迹预览、任务提交（必须带确认）、视频下载 |
-| `traj.py` | 关键帧 → 每一帧的相机位姿（单元测试：`python3 -m unittest discover -s frontend/tests`） |
-| `job_runner.py` | 独立进程：开 pod → 推送任务 → 跟踪进度和花费 → 拉回结果 → 关 pod（都通过护栏） |
-| `static/` | 页面：three.js 点云预览、关键帧编辑 |
-| `fake_scene.py` | 模拟模式用的合成场景 |
-| `showcase_build.py` + `static/showcase.*` | 结果展示页（课堂录屏用） |
-| `../pod/tools/fourc4d_direct.py` | pod 上直接用模型导出场景 / 按轨迹渲染，不需要训练数据集 |
-| `../pod/configs/models.json` | 可用的模型列表（模型放在 Global volume 的 `models/<名字>/`） |
+| Prepare scene preview (once per scene) | about 1.5 minutes from pod start to pod stop, **$0.04** |
+| Render a 4-second camera move (120 frames, 960×720) | about 1.5 minutes, **$0.045**; rendering itself takes 5.8 s (20.8 fps), peak GPU memory 4.3 GB |
 
-**模拟模式**（测试界面，不开 GPU）：`ATLAS_FRONTEND_FAKE=1 ATLAS_FRONTEND_PORT=8766 python3 frontend/app.py`
+Most of it is fixed overhead — starting the pod, restoring the environment, copying the model — about 1.5 minutes. Rendering itself is fast: a 30-second camera move (900 frames) is expected to add only about 45 seconds.
 
-数据目录 `~/atlas_frontend/`（场景预览、任务、视频）不在仓库里。
+## Results showcase page (/showcase)
 
-## 安全
+An English showcase page for the BUS 205 class screen recording: dark theme, large type, one section per screen. Navigate with ← → / Space / PageUp PageDown, F for full screen, and `/showcase#3` opens screen 3 directly. The cursor hides after the mouse is still for 2 seconds, and videos restart from the beginning when they scroll into view.
 
-- 只监听 127.0.0.1，不改 Caddy、不开公网端口。
-- 同一时间只允许一个 GPU 任务；另有其他 atlas- 任务在用 GPU 时拒绝。
-- 每次开 GPU 前页面都会弹窗确认并显示预计花费。所有开关 pod 都走护栏（gpu-up / gpu-down），时长上限、空闲检测、任务结束自动关机照常生效。
-- 单次最多 900 帧、分辨率不超过 1600×1200。
+Content comes only from existing results; no GPU is started. Assets are generated by a script into `~/atlas_frontend/showcase/` (not in the repo):
+
+```bash
+python3 frontend/showcase_build.py   # convert to H.264 + faststart (≤ 20 MB each), split camera thumbnails, compute camera azimuths, write showcase.json
+```
+
+`showcase.json` contains only numbers and file names; the script checks it for paths, IPs and IDs and stops if it finds any.
+
+## Structure
+
+| File | Purpose |
+|---|---|
+| `app.py` | Flask backend: scene data, trajectory preview, job submission (confirmation required), video download |
+| `traj.py` | Keyframes → per-frame camera poses (unit tests: `python3 -m unittest discover -s frontend/tests`) |
+| `job_runner.py` | Separate process: start pod → push job → track progress and cost → pull results → stop pod (all via the guard) |
+| `static/` | Pages: three.js point-cloud preview, keyframe editor |
+| `fake_scene.py` | Synthetic scene for fake mode |
+| `showcase_build.py` + `static/showcase.*` | Results showcase page (for the class screen recording) |
+| `../pod/tools/fourc4d_direct.py` | On the pod, exports the scene / renders along a trajectory directly from the model, without needing the training dataset |
+| `../pod/configs/models.json` | List of available models (models live at `models/<name>/` on the Global volume) |
+
+**Fake mode** (test the UI without starting a GPU): `ATLAS_FRONTEND_FAKE=1 ATLAS_FRONTEND_PORT=8766 python3 frontend/app.py`
+
+The data directory `~/atlas_frontend/` (scene previews, jobs, videos) is not in the repo.
+
+## Security
+
+- Listens only on 127.0.0.1; doesn't modify Caddy or open public ports.
+- Only one GPU job at a time; refuses if another atlas- job is using the GPU.
+- Before every GPU start, the page shows a confirmation dialog with the estimated cost. All pod starts/stops go through the guard (gpu-up / gpu-down), so time limits, idle detection and auto-shutdown after a job still apply.
+- At most 900 frames per job, resolution no higher than 1600×1200.

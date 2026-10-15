@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""ATLAS 运镜工作台（Flask，只监听 127.0.0.1）。
+"""ATLAS camera path workbench (Flask, listens on 127.0.0.1 only).
 
-访问：在自己电脑上 ssh -L 8765:127.0.0.1:8765 <用户名>@<服务器>，然后打开 http://localhost:8765
-数据目录（不进仓库）：~/atlas_frontend/{scenes,jobs}
-ATLAS_FRONTEND_FAKE=1 时不开 GPU，用合成场景和测试视频（测试界面用）。
+Access: on your own machine run ssh -L 8765:127.0.0.1:8765 <user>@<server>, then open http://localhost:8765
+Data directory (not in the repo): ~/atlas_frontend/{scenes,jobs}
+With ATLAS_FRONTEND_FAKE=1 no GPU is started; a synthetic scene and test video are used (for UI testing).
 """
 import json
 import math
@@ -24,8 +24,8 @@ DATA = Path(os.environ.get("ATLAS_FRONTEND_DATA", Path.home() / "atlas_frontend"
 FAKE = os.environ.get("ATLAS_FRONTEND_FAKE") == "1"
 MODELS = json.loads((REPO / "pod/configs/models.json").read_text())
 MODELS = {k: v for k, v in MODELS.items() if not k.startswith("_")}
-GPU_PRICE = 1.79                    # A100 SXM $/h（gpu-up 的首选）
-MAX_FRAMES = 900                    # 单次最多 30 秒 @ 30fps
+GPU_PRICE = 1.79                    # A100 SXM $/h (gpu-up's first choice)
+MAX_FRAMES = 900                    # at most 30 s per job @ 30 fps
 MAX_PIXELS = 1600 * 1200
 
 sys.path.insert(0, str(APP))
@@ -33,7 +33,7 @@ sys.path.insert(0, str(REPO / "guard"))
 import traj  # noqa: E402
 
 class ApiError(Exception):
-    """返回给页面的错误：只有稳定的 code 和参数，文字由前端按当前语言翻译。"""
+    """Error returned to the page: only a stable code and params; the frontend translates the text into the current language."""
     def __init__(self, status, code, **params):
         super().__init__(code)
         self.status, self.code, self.params = status, code, params
@@ -80,9 +80,9 @@ def running_job():
 
 
 def estimate(n_frames, width, height, kind="render"):
-    """估算 GPU 时间和花费（分钟）。2026-10-15 实测：开 pod 到关 pod 的固定开销约 1.5–2 分钟
-    （开 pod ~35s、恢复 4c4d 环境 + 复制模型 ~40s、加载模型 3s、编码和拉回 ~10s）；
-    960×720 渲染 20.8 帧/秒，按像素数反比估算其他分辨率。导出场景实测约 1.5 分钟。"""
+    """Estimate GPU time (minutes) and cost. Measured 2026-10-15: fixed overhead from pod start to pod stop is about 1.5–2 min
+    (start pod ~35 s, restore 4c4d env + copy model ~40 s, load model 3 s, encode and pull back ~10 s);
+    960×720 renders at 20.8 fps, other resolutions scale inversely with pixel count. Scene export measured at about 1.5 min."""
     fixed = 2.0
     if kind == "export":
         work = 0.5
@@ -113,13 +113,13 @@ def start_job(kind, model, spec_extra=None, traj_obj=None):
     return jid
 
 
-# ---------------------------------------------------------------- 页面
+# ---------------------------------------------------------------- pages
 @app.get("/")
 def index():
     return send_from_directory(APP / "static", "index.html")
 
 
-# ---------------------------------------------------------------- 结果展示页（课堂录屏用）
+# ---------------------------------------------------------------- results showcase page (for class screen recording)
 SHOWCASE = DATA / "showcase"
 
 
@@ -143,7 +143,7 @@ def showcase_media(name):
     return send_from_directory(SHOWCASE / "media", name, max_age=3600, conditional=True)
 
 
-# ---------------------------------------------------------------- 模型与场景
+# ---------------------------------------------------------------- models and scenes
 @app.get("/api/models")
 def api_models():
     out = []
@@ -190,7 +190,7 @@ def api_export(model):
     return jsonify({"job": jid})
 
 
-# ---------------------------------------------------------------- 轨迹
+# ---------------------------------------------------------------- trajectory
 def parse_spec(body, scene):
     if not isinstance(body, dict):
         fail(400, "bad_request")
@@ -211,7 +211,7 @@ def parse_spec(body, scene):
 
 @app.post("/api/path/<model>")
 def api_path(model):
-    """预览用：返回每一帧的相机（c2w、视场角、源时间），浏览器里画轨迹、按镜头视角播放点云。"""
+    """For preview: return the camera of every frame (c2w, FOV, source time) so the browser can draw the path and play the point cloud from the shot view."""
     scene = load_scene(model)
     spec = parse_spec(request.get_json(force=True), scene)
     t = traj.build_trajectory(scene, spec)
@@ -224,7 +224,7 @@ def api_path(model):
                     "too_long": n > MAX_FRAMES})
 
 
-# ---------------------------------------------------------------- 任务
+# ---------------------------------------------------------------- jobs
 @app.post("/api/render/<model>")
 def api_render(model):
     scene = load_scene(model)
@@ -272,7 +272,7 @@ def api_log(jid):
 
 @app.get("/api/status")
 def api_status():
-    """余额和 GPU 状态（缓存 60 秒，避免每次轮询都调 RunPod）。"""
+    """Balance and GPU status (cached for 60 s so each poll does not call RunPod)."""
     cache = DATA / ".status_cache.json"
     if cache.exists() and time.time() - cache.stat().st_mtime < 60:
         return jsonify(json.loads(cache.read_text()))
@@ -298,7 +298,7 @@ def api_err(e):
 @app.errorhandler(404)
 @app.errorhandler(409)
 def http_err(e):
-    # Flask 自己产生的错误（找不到路由、JSON 解析失败等）
+    # Errors raised by Flask itself (unknown route, JSON parse failure, etc.)
     return jsonify({"code": {400: "bad_request", 404: "not_found", 409: "conflict"}[e.code], "params": {}}), e.code
 
 

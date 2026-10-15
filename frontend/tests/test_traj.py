@@ -1,4 +1,4 @@
-"""运镜轨迹的单元测试：python3 -m unittest discover -s frontend/tests"""
+"""Unit tests for the camera path: python3 -m unittest discover -s frontend/tests"""
 import math
 import sys
 import unittest
@@ -11,13 +11,13 @@ import traj  # noqa: E402
 
 
 def look_at_w2c(center, target):
-    """OpenCV 约定的 w2c：z 指向 target，y 朝下。"""
+    """w2c in the OpenCV convention: z points at target, y points down."""
     z = np.asarray(target, float) - center
     z /= np.linalg.norm(z)
-    x = np.cross(z, np.array([0, 1.0, 0]))       # 世界 y 朝下（OpenCV 约定）
+    x = np.cross(z, np.array([0, 1.0, 0]))       # world y points down (OpenCV convention)
     x /= np.linalg.norm(x)
     y = np.cross(z, x)
-    R = np.stack([x, y, z])  # 行 = 相机轴在世界中的方向
+    R = np.stack([x, y, z])  # rows = camera axes in world coordinates
     w2c = np.eye(4)
     w2c[:3, :3] = R
     w2c[:3, 3] = -R @ center
@@ -38,7 +38,7 @@ class TrajTest(unittest.TestCase):
         self.scene = make_scene()
         self.base = self.scene["cameras"]["cam02"]["w2c"]
         self.sp = traj.camera_spacing(self.scene["cameras"])
-        self.Rb = np.asarray(self.base)[:3, :3]          # 行：基准相机 x/y/z 轴在世界中的方向
+        self.Rb = np.asarray(self.base)[:3, :3]          # rows: base camera x/y/z axes in world coordinates
 
     def c2w(self, **kf):
         return traj.keyframe_c2w(self.base, kf, self.sp)
@@ -57,11 +57,11 @@ class TrajTest(unittest.TestCase):
 
     def test_yaw_right(self):
         fwd = self.c2w(yaw=90)[:3, 2]
-        np.testing.assert_allclose(fwd, self.Rb[0], atol=1e-9)   # 向右转 90° → 朝向原来的右方
+        np.testing.assert_allclose(fwd, self.Rb[0], atol=1e-9)   # turn right 90° → face the original right direction
 
     def test_pitch_up(self):
         fwd = self.c2w(pitch=30)[:3, 2]
-        self.assertGreater(float(fwd @ -self.Rb[1]), 0.49)         # 朝上（-y 方向）分量 = sin30°
+        self.assertGreater(float(fwd @ -self.Rb[1]), 0.49)         # upward (-y) component = sin30°
         self.assertAlmostEqual(float(fwd @ self.Rb[2]), math.cos(math.radians(30)), places=6)
 
     def test_build_two_keyframes(self):
@@ -74,11 +74,11 @@ class TrajTest(unittest.TestCase):
         np.testing.assert_allclose(np.linalg.inv(fr[-1]["w2c"]), self.c2w(right=2, yaw=20), atol=1e-5)
         self.assertAlmostEqual(fr[0]["src_seconds"], 1.0)
         self.assertAlmostEqual(fr[-1]["src_seconds"], 3.0)
-        self.assertAlmostEqual(fr[0]["timestamp"], 1.0)          # 源视频 1 秒 → 模型时间 1.0（总长 10）
+        self.assertAlmostEqual(fr[0]["timestamp"], 1.0)          # source 1 s → model time 1.0 (total length 10)
         fy0 = 480 / (2 * math.tan(math.radians(50) / 2))
         self.assertAlmostEqual(fr[0]["fy"], fy0, places=4)
         src = [f["src_seconds"] for f in fr]
-        self.assertEqual(src, sorted(src))                       # 源时间单调递增
+        self.assertEqual(src, sorted(src))                       # source time is monotonically increasing
 
     def test_single_keyframe_static(self):
         spec = {"base_cam": "cam00", "duration": 1.0, "fps": 5, "width": 64, "height": 48,

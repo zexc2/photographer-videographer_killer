@@ -1,12 +1,12 @@
 {
-  "_comment": "CMU Panoptic 阶段 3 的序列与机位选择（2026-10-14）。机位编号 = HD 相机 hd_00_XX 的 XX。选择依据见 docs/stage3-data.md",
+  "_comment": "CMU Panoptic stage 3 sequence and camera selection (2026-10-14). Camera number = XX of HD camera hd_00_XX. Rationale in docs/stage3-data.md",
   "endpoint": "http://domedb.perception.cs.cmu.edu",
   "fps": 29.97,
   "num_frames": 300,
   "sequences": [
     {
       "name": "171204_pose1",
-      "desc": "单人、大幅度肢体动作（range of motion），场景简单",
+      "desc": "Single person, large-amplitude limb movements (range of motion), simple scene",
       "start_sec": 30.0,
       "train_cams": [5, 8, 24, 25],
       "eval_cam": 0,
@@ -14,7 +14,7 @@
     },
     {
       "name": "160906_band1",
-      "desc": "三人围坐演奏（吉他、手鼓），接近活动现场；人物互相遮挡",
+      "desc": "Three people seated playing music (guitar, hand drum), close to a live event; people occlude each other",
       "start_sec": 20.0,
       "train_cams": [3, 8, 9, 14],
       "eval_cam": 23,

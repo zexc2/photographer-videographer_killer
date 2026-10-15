@@ -1,4 +1,4 @@
-/* 工具型界面：左侧大面积 3D 视图，右侧窄面板按 1-2-3 步骤操作。橙色只用于"你的运镜"，灰色是已有机位 */
+/* Tool-style UI: large 3D view on the left, narrow step 1-2-3 panel on the right. Orange is only for "your camera path"; grey is existing cameras */
 :root {
   --bg: #f3f4f2; --surface: #ffffff; --fg: #1c2320; --muted: #66726c; --line: #d8ddd9;
   --accent: #d9662b; --accent-fg: #ffffff; --good: #2f7a3f; --warn: #a8701a; --bad: #b23a3a;
@@ -96,7 +96,7 @@ input[type=number] { width: 70px; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 
-/* 语言切换 EN / 中文 */
+/* Language toggle EN / Chinese */
 .lang { display: inline-flex; }
 .lang button { border-radius: 0; padding: 2px 9px; }
 .lang button:first-child { border-radius: 6px 0 0 6px; }

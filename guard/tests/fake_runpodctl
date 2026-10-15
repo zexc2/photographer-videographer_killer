@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 假的 runpodctl：从 $FAKE_DIR 读 JSON，记录所有调用到 $FAKE_DIR/calls.log。只用于离线测试。
+# Fake runpodctl: reads JSON from $FAKE_DIR and logs every call to $FAKE_DIR/calls.log. Offline tests only.
 set -e
 echo "$*" >> "$FAKE_DIR/calls.log"
 case "$1 $2" in
@@ -11,5 +11,5 @@ case "$1 $2" in
   "pod stop"|"pod delete") echo '{"ok":true}' ;;
   "user ")                 [ -f "$FAKE_DIR/user_fail" ] && exit 1; cat "$FAKE_DIR/user.json" ;;
   "ssh list-keys")         cat "$FAKE_DIR/keys.json" ;;
-  *) echo "fake: 未实现 $*" >&2; exit 1 ;;
+  *) echo "fake: not implemented $*" >&2; exit 1 ;;
 esac

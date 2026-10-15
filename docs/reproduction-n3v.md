@@ -1,73 +1,73 @@
-# 4C4D 官方复现：N3V flame_steak（2026-10-15）
+# Official 4C4D reproduction: N3V flame_steak (2026-10-15)
 
-## 为什么做这个
+## Why we did this
 
-4C4D 在我们的 Panoptic 测试中，评估机位 PSNR 只有 21.7，画面发糊、有漂浮物（见 [report-baseline.md](report-baseline.md)）。我们要判断原因属于哪一种：
-- **我们的问题**：环境（我们把官方的 py3.7 / CUDA 11.6 升级到了 py3.10 / CUDA 12.4）或参数设置有误；
-- **数据本身难**：Panoptic 场景太难，机位夹角大、重叠少。
+In our Panoptic test, 4C4D scored only 21.7 PSNR at the evaluation camera, with blurry images and floaters (see [report-baseline.md](report-baseline.md)). We needed to determine which of these was the cause:
+- **Our problem**: the environment (we upgraded the official py3.7 / CUDA 11.6 to py3.10 / CUDA 12.4) or the parameter settings are wrong;
+- **The data itself is hard**: the Panoptic scene is too difficult — wide angles between cameras, little overlap.
 
-做法：在论文用的数据集上，**完全按官方设置**跑一次，和论文表格对比。
+Approach: run once on the dataset used in the paper, **exactly with the official settings**, and compare against the paper's table.
 
-## 设置（与官方 / 论文一致）
+## Setup (same as official / paper)
 
-| 项目 | 设置 |
+| Item | Setting |
 |---|---|
-| 场景 | N3V **flame_steak**（官方 README 示例场景） |
-| 原始数据 | N3V 官方 GitHub release，21 个机位，2704×2028，前 300 帧 |
-| 相机参数 + 初始点云 | **作者提供的预处理包**（MASt3R 点云，21 个机位） |
-| 训练 | 官方 `configs/dynerf/flame_steak.yaml` 原样使用，训练视角 `1,10,13,20`，30k 步，`--res 2`（论文写明图片缩小一半） |
-| 运镜视频 | README 的官方命令 `--traj arc` |
-| 评估 | 官方 `render.py --validate`，测试视角 = 其余 17 个机位；为省时间每 10 帧取 1 帧（共 510 张）。论文用的是全部帧 |
-| 代码与环境 | 和 Panoptic 测试完全相同（同一个环境包、同一个 commit） |
+| Scene | N3V **flame_steak** (the example scene in the official README) |
+| Raw data | Official N3V GitHub release, 21 cameras, 2704×2028, first 300 frames |
+| Camera parameters + initial point cloud | **The authors' preprocessed package** (MASt3R point cloud, 21 cameras) |
+| Training | Official `configs/dynerf/flame_steak.yaml` used unchanged, training views `1,10,13,20`, 30k steps, `--res 2` (the paper states images are downscaled by half) |
+| Camera-move video | The official README command `--traj arc` |
+| Evaluation | Official `render.py --validate`, test views = the remaining 17 cameras; to save time, 1 frame in every 10 (510 images total). The paper uses all frames |
+| Code and environment | Exactly the same as the Panoptic test (same environment pack, same commit) |
 
-## 结果
+## Results
 
-| flame_steak（4 个训练视角） | PSNR ↑ | DSSIM1 ↓ | DSSIM2 ↓ | LPIPS ↓ |
+| flame_steak (4 training views) | PSNR ↑ | DSSIM1 ↓ | DSSIM2 ↓ | LPIPS ↓ |
 |---|---|---|---|---|
-| **我们的复现** | **24.16** | **0.0738** | **0.0451** | **0.1137** |
-| 论文 Table 7 | 23.72 | 0.075 | 0.046 | 0.114 |
-| 差距 | +0.44 dB | 更好 0.001 | 更好 0.001 | 持平 |
+| **Our reproduction** | **24.16** | **0.0738** | **0.0451** | **0.1137** |
+| Paper, Table 7 | 23.72 | 0.075 | 0.046 | 0.114 |
+| Difference | +0.44 dB | 0.001 better | 0.001 better | Same |
 
-- 训练过程中官方自测（测试视角每 100 张取 1 张）：第 10,500 步 24.22 → 第 27,000 步 24.76（最高）→ 第 30,000 步 24.68。官方脚本保留的是测试集上分数最高的 checkpoint（第 27,000 步），论文的数字应该也是这样得到的。
-- 最终 235 万个高斯点。
-- 运镜视频主观上人物和背景都清晰，只在训练机位没拍到的角度（画面边缘）有少量模糊和重影。
+- Official self-test during training (1 in every 100 test-view images): 24.22 at step 10,500 → 24.76 at step 27,000 (best) → 24.68 at step 30,000. The official script keeps the checkpoint with the best test-set score (step 27,000); the paper's numbers were presumably obtained the same way.
+- 2.35 million Gaussians at the end.
+- Subjectively, the person and background are both sharp in the camera-move video, with only slight blur and ghosting at angles the training cameras didn't capture (image edges).
 
-**结论：复现成功，我们的环境和参数没有问题。** 0.44 dB 的差距在合理范围内，原因可能是评估抽帧、随机种子、GPU 不同。
+**Conclusion: the reproduction succeeded; our environment and parameters are fine.** A 0.44 dB difference is within a reasonable range, possibly due to frame subsampling in evaluation, random seed, or a different GPU.
 
-## 那 Panoptic 上为什么差？
+## So why is Panoptic worse?
 
-同一套代码，N3V 上 24.2，Panoptic 上 21.7，差了 2.5 dB。区别都在数据上：
+Same code: 24.2 on N3V, 21.7 on Panoptic — a 2.5 dB gap. The differences are all in the data:
 
-| | N3V flame_steak | 我们的 Panoptic 设置 |
+| | N3V flame_steak | Our Panoptic setup |
 |---|---|---|
-| 机位布置 | 一排**朝同一方向**的相机（前向阵列），4 个训练机位之间重叠很大 | 4 个机位**围着人分布在约 145° 的弧上**，相邻夹角 26°–73° |
-| 评估视角 | 位于训练机位之间，视角接近 | 和最近的训练机位相差 26°–47°，看到的是训练机位几乎没拍到的侧面 |
-| 背景 | 纹理丰富的厨房 | 大片纯白、重复的穹顶墙面，匹配困难 |
-| 动作 | 原地做菜，动作幅度小 | 全身大幅度伸展，手臂快速移动 |
-| MASt3R 匹配 | — | 夹角超过 70° 的机位对只有 2%–8% 的匹配能通过检验 |
+| Camera layout | A row of cameras **facing the same direction** (forward-facing array); large overlap between the 4 training cameras | 4 cameras **surrounding the person on an arc of about 145°**, 26°–73° between neighbors |
+| Evaluation view | Between the training cameras, with a similar viewpoint | 26°–47° away from the nearest training camera, seeing sides the training cameras barely captured |
+| Background | Richly textured kitchen | Large, plain-white, repetitive dome walls; hard to match |
+| Motion | Cooking in place, small movements | Large full-body stretches, fast arm movements |
+| MASt3R matching | — | For camera pairs more than 70° apart, only 2%–8% of matches pass the check |
 
-所以 Panoptic 上效果差，**主要是机位太分散、重叠太少**，不是环境或参数的问题。论文里也有同样的规律：作者在 N3V 上最难的两个场景只有 19.2–19.6 dB。
+So Panoptic does worse **mainly because the cameras are too spread out and overlap too little**, not because of the environment or parameters. The paper shows the same pattern: the authors' two hardest N3V scenes score only 19.2–19.6 dB.
 
-## 对实拍的启示
+## Implications for real shoots
 
-1. **机位要集中在一个方向、彼此有足够重叠**：比如 4 台手机在舞台正前方排成一个约 60°–90° 的扇形，相邻夹角不超过 30°。不要围着人摆一圈。
-2. **虚拟运镜只在机位覆盖的范围内效果好**：镜头走出这个范围，比如转到侧面、背面，画质会明显下降。
-3. **背景纹理丰富会有帮助**；大面积纯色墙面对重建不利。
+1. **Cameras should be concentrated in one direction with enough overlap**: e.g. 4 phones in a fan of about 60°–90° directly in front of the stage, no more than 30° between neighbors. Don't place them in a ring around the subject.
+2. **Virtual camera moves only work well within the area covered by the cameras**: once the shot leaves that area — e.g. turning to the side or back — quality drops noticeably.
+3. **Richly textured backgrounds help**; large solid-color walls are bad for reconstruction.
 
-下一步可以在 Panoptic 上按这个原则重新选 4 个更集中的机位再测一次，验证"机位布置"的影响到底有多大。
+As a next step, we could pick 4 more concentrated cameras on Panoptic following this principle and test again, to measure how much the camera layout actually matters.
 
-## 耗时与花费
+## Time and cost
 
-| 步骤 | 用时 |
+| Step | Time |
 |---|---|
-| 环境（已在容器盘上） | 5 秒 |
-| 数据（下载、提取 6,300 张图片） | 3 分钟 |
-| 训练 30k 步（1352×1014） | **3 小时 14 分钟** |
-| 官方运镜渲染（480 帧） | 5 分钟 |
-| 评估（510 张） | 18 分钟 |
+| Environment (already on the container disk) | 5 seconds |
+| Data (download, extract 6,300 images) | 3 minutes |
+| Training, 30k steps (1352×1014) | **3 h 14 min** |
+| Official camera-move render (480 frames) | 5 minutes |
+| Evaluation (510 images) | 18 minutes |
 
-pod 总花费 **$7.30**（含两次脚本错误导致的启动失败，共约 4 分钟）。
+Total pod cost **$7.30** (including two startup failures caused by script errors, about 4 minutes in total).
 
-## 许可
+## License
 
-N3V 数据集：CC BY-NC 4.0，仅限研究；仓库里不包含任何 N3V 数据。
+N3V dataset: CC BY-NC 4.0, research only; this repo contains no N3V data.

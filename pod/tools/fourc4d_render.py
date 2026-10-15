@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""用官方 4C4D render.py 渲染自定义运镜轨迹。在 4c4d 环境里、4C4D 仓库目录下运行。
+"""Render a custom camera-motion trajectory with the official 4C4D render.py. Run in the 4c4d env from the 4C4D repo dir.
 
-官方 render.py --traj 只支持 ellipse / interpolate / arc。这里在 render.py 导入之前替换两个函数，其余完全是官方流程：
-  utils.render_utils.generate_path → 返回 make_trajectories.py 生成的轨迹相机（与 GEN3C 走同一条路径）
-  utils.render_utils.create_videos → 不做（视频由任务脚本用 ffmpeg 统一编码）
-相机构造方式与官方 generate_path 相同：deepcopy 场景里的相机，改位姿、视场角、投影矩阵和时间戳。
+The official render.py --traj only supports ellipse / interpolate / arc. Two functions are replaced before render.py is imported; the rest is the upstream pipeline:
+  utils.render_utils.generate_path -> returns the trajectory cameras from make_trajectories.py (same path as GEN3C)
+  utils.render_utils.create_videos -> skipped (videos are encoded uniformly by the task script with ffmpeg)
+Cameras are built the same way as the official generate_path: deepcopy a scene camera, then change pose, FoV, projection matrix and timestamp.
 
-用法：ATLAS_4C4D_PATH=.../4c4d_path.npz python fourc4d_render.py <render.py 的参数，需含 --traj custom>
-渲染结果：<model_path>/<output_dir>/render/traj/ours_<iter>/renders/00000.png …
+Usage: ATLAS_4C4D_PATH=.../4c4d_path.npz python fourc4d_render.py <render.py args, must include --traj custom>
+Output: <model_path>/<output_dir>/render/traj/ours_<iter>/renders/00000.png ...
 """
 import copy
 import math
@@ -31,7 +31,7 @@ def custom_generate_path(viewpoint_cameras, n_frames=480, traj="custom", **kw):
         cam = copy.deepcopy(tmpl)
         cam.image_height = int(cam.image_height / 2) * 2
         cam.image_width = int(cam.image_width / 2) * 2
-        # 视场角只取决于全分辨率焦距和画幅，与渲染分辨率无关
+        # FoV depends only on the full-resolution focal length and frame size, not on the render resolution
         cam.FoVx = 2 * math.atan(W / (2 * float(d["fx"][i])))
         cam.FoVy = 2 * math.atan(H / (2 * float(d["fy"][i])))
         cam.world_view_transform = torch.from_numpy(np.ascontiguousarray(d["w2c"][i].T)).float().cuda()
@@ -42,7 +42,7 @@ def custom_generate_path(viewpoint_cameras, n_frames=480, traj="custom", **kw):
         cam.camera_center = cam.world_view_transform.inverse()[3, :3]
         cam.timestamp = float(d["timestamp"][i])
         cams.append(cam)
-    print(f"[fourc4d_render] 自定义轨迹 {len(cams)} 帧", flush=True)
+    print(f"[fourc4d_render] custom trajectory: {len(cams)} frames", flush=True)
     return cams
 
 

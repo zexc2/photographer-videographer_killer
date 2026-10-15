@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""留出机位评估：PSNR / SSIM / LPIPS，并生成"真值 | 预测 | 差异"对比视频。在 4c4d 环境里运行（torch、lpips、scikit-image）。
+"""Held-out camera evaluation: PSNR / SSIM / LPIPS, plus a "ground truth | prediction | difference" comparison video. Run in the 4c4d env (torch, lpips, scikit-image).
 
-统一口径（两个模型可直接比较）：
-  - 帧：源片段的第 0..N-1 帧（GEN3C 一次生成 121 帧）
-  - 画面：GT 1920×1080 → 缩放到 960×540 → 上下各裁 6 像素到 960×528
-    这与 GEN3C 的处理一致（1080p → 720×1280 → 中心裁成 704×1280，等比缩到 528×960）
-  - GEN3C 预测 704×1280 → 缩放到 528×960；4C4D 渲染 540×960（--res 2）→ 同样上下各裁 6 像素
-用法：
+Common protocol (so the two models are directly comparable):
+  - Frames: frames 0..N-1 of the source clip (GEN3C generates 121 frames in one go)
+  - Image: GT 1920x1080 -> resize to 960x540 -> crop 6 px top and bottom to 960x528
+    This matches GEN3C's processing (1080p -> 720x1280 -> centre crop to 704x1280, scaled proportionally to 528x960)
+  - GEN3C prediction 704x1280 -> resize to 528x960; 4C4D render 540x960 (--res 2) -> same 6 px top/bottom crop
+Usage:
   eval_metrics.py --pred X.mp4|DIR --kind gen3c|4c4d --gt-dir images/ --gt-cam cam00 --frames 121 --out metrics.json [--video cmp.mp4]
 """
 import argparse
@@ -36,14 +36,14 @@ def read_pred(path, n):
 
 
 def to_eval(img, kind):
-    """把任意来源的帧变成 528×960 的统一评估画面（RGB uint8）。"""
+    """Turn frames from any source into the common 528x960 evaluation image (RGB uint8)."""
     h, w = img.shape[:2]
     if kind == "gt":
         img = cv2.resize(img, (960, 540), interpolation=cv2.INTER_AREA)
         return img[6:534]
     if kind == "gen3c":  # 704×1280 → 528×960
         return cv2.resize(img, (EVAL_W, EVAL_H), interpolation=cv2.INTER_AREA)
-    if kind == "4c4d":   # 540×960（若分辨率不同先缩放）
+    if kind == "4c4d":   # 540x960 (resized first if the resolution differs)
         if (w, h) != (960, 540):
             img = cv2.resize(img, (960, 540), interpolation=cv2.INTER_AREA)
         return img[6:534]
@@ -58,7 +58,7 @@ def main():
     ap.add_argument("--gt-cam", required=True)
     ap.add_argument("--frames", type=int, default=121)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--video", help="输出对比视频（真值 | 预测 | 差异×3）")
+    ap.add_argument("--video", help="output comparison video (ground truth | prediction | difference x3)")
     ap.add_argument("--no-lpips", action="store_true")
     a = ap.parse_args()
 
@@ -66,7 +66,7 @@ def main():
     preds = read_pred(a.pred, a.frames)
     n = len(preds)
     if n == 0:
-        raise SystemExit(f"读不到预测帧：{a.pred}")
+        raise SystemExit(f"cannot read predicted frames: {a.pred}")
     gts = [cv2.imread(str(Path(a.gt_dir) / f"{a.gt_cam}_{i:04d}.png"))[:, :, ::-1] for i in range(n)]
 
     lp = None

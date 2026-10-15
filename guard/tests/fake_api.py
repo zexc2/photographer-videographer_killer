@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""假的 RunPod API v2，只用于离线测试。数据从 $FAKE_DIR 下的 JSON 读取，所有写操作记到 calls.log。
+"""Fake RunPod API v2, for offline tests only. Data is read from JSON files in $FAKE_DIR; all calls are logged to calls.log.
 
-用法: fake_api.py <port>
-  $FAKE_DIR/api_pods.json     GET /v2/pods 的 pods 数组
-  $FAKE_DIR/api_gv.json       GET /v2/global-volumes 的 globalVolumes 数组
+Usage: fake_api.py <port>
+  $FAKE_DIR/api_pods.json     pods array for GET /v2/pods
+  $FAKE_DIR/api_gv.json       globalVolumes array for GET /v2/global-volumes
   $FAKE_DIR/api_catalog.json  {gpuId: {"availability": "LOW", "price": 1.79}}
-  $FAKE_DIR/api_fail          存在时所有请求返回 503（模拟 API 故障）
-  $FAKE_DIR/create_fail       每行一个 gpuId，创建这些 GPU 的 pod 返回 409（模拟抢不到卡）
+  $FAKE_DIR/api_fail          if present, every request returns 503 (simulated API outage)
+  $FAKE_DIR/create_fail       one gpuId per line; creating pods with these GPUs returns 409 (simulated no capacity)
 """
 import json
 import os

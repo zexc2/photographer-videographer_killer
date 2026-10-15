@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""阶段 4：生成两个模型共用的相机轨迹，并把 GEN3C（ViPE）的尺度对齐到真实米制。在 gen3c 环境里运行（需要 OpenEXR）。
+"""Stage 4: build the camera trajectories shared by both models and align GEN3C (ViPE) scale to real metres. Run in the gen3c env (needs OpenEXR).
 
-输出到 <work>/stage4/：
-  gen3c_eval.npz   GEN3C 评估轨迹：121 帧都在评估机位。T = 评估相机相对输入相机的位姿（已乘尺度 k），K = GEN3C 704×1280 坐标下的内参
-  gen3c_path.npz   GEN3C 运镜轨迹：输入机位 → 评估机位平滑移动
-  4c4d_path.npz    4C4D 运镜轨迹（同一条）：世界坐标 w2c（米）、焦距、时间戳
-  trajectories.json  尺度对齐结果等
+Writes to <work>/stage4/:
+  gen3c_eval.npz   GEN3C eval trajectory: all 121 frames at the eval camera. T = eval camera pose relative to the input camera (scaled by k), K = intrinsics in GEN3C's 704x1280 frame
+  gen3c_path.npz   GEN3C camera-motion trajectory: smooth move from the input camera to the eval camera
+  4c4d_path.npz    4C4D camera-motion trajectory (the same path): world w2c (metres), focal length, timestamps
+  trajectories.json  scale alignment results etc.
 
-尺度对齐：GEN3C 的 3D 缓存来自 ViPE 估计的深度（单目，"自认为的米"），而评估机位的相对位姿是真实米制。
-把 MASt3R 点云（由真实标定三角化，米制）投影到输入机位，与同一像素的 ViPE 深度比较，取中位数比例 k，
-用 k 缩放相对位姿的平移。这是单目方法做新视角评估的常规做法。
+Scale alignment: GEN3C's 3D cache comes from ViPE's estimated depth (monocular, "self-assessed metres"), while the eval camera's relative pose is in real metres.
+Project the MASt3R point cloud (triangulated from the real calibration, metric) into the input camera, compare with ViPE depth at the same pixels, take the median ratio k,
+and scale the translation of relative poses by k. This is the usual practice for evaluating monocular methods on novel views.
 """
 import argparse
 import json
@@ -18,7 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
-GEN3C_RESIZE = (720, 1280)  # (h, w)，与 gen3c_dynamic.py 中 load_vipe_data 的参数一致
+GEN3C_RESIZE = (720, 1280)  # (h, w), same as the load_vipe_data argument in gen3c_dynamic.py
 GEN3C_CROP = (704, 1280)
 NUM_FRAMES = 121
 
@@ -86,9 +86,9 @@ def slerp(q0, q1, t):
 
 
 def interp_path(wa, wb, n):
-    """两个 w2c 之间平滑插值（相机中心线性、朝向球面插值、两端缓入缓出）。返回 (n,4,4) w2c 和插值系数。"""
+    """Smoothly interpolate between two w2c (camera centre linear, orientation slerp, ease-in/ease-out at both ends). Returns (n,4,4) w2c and the blend weights."""
     Ca, Cb = -wa[:3, :3].T @ wa[:3, 3], -wb[:3, :3].T @ wb[:3, 3]
-    qa, qb = quat_from_R(wa[:3, :3].T), quat_from_R(wb[:3, :3].T)  # c2w 旋转
+    qa, qb = quat_from_R(wa[:3, :3].T), quat_from_R(wb[:3, :3].T)  # c2w rotations
     out, ss = [], []
     for i in range(n):
         u = i / (n - 1)
@@ -104,7 +104,7 @@ def interp_path(wa, wb, n):
 
 
 def to_gen3c_K(K, src_wh):
-    """全分辨率内参 → GEN3C 缩放 + 中心裁剪后的内参（与 vipe_utils._adjust_intrinsics_for_resize_and_crop 相同）。"""
+    """Full-resolution intrinsics -> intrinsics after GEN3C resize + centre crop (same as vipe_utils._adjust_intrinsics_for_resize_and_crop)."""
     sw, sh = src_wh
     (rh, rw), (ch, cw) = GEN3C_RESIZE, GEN3C_CROP
     K = np.array(K, dtype=np.float64).copy()
@@ -119,7 +119,7 @@ def to_gen3c_K(K, src_wh):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--work", required=True, help="阶段 3 的序列工作目录（含 meta.json、4c4d/、gen3c/vipe/）")
+    ap.add_argument("--work", required=True, help="stage 3 sequence work dir (contains meta.json, 4c4d/, gen3c/vipe/)")
     a = ap.parse_args()
     W = Path(a.work)
     meta = json.load(open(W / "meta.json"))
@@ -131,7 +131,7 @@ def main():
     out = W / "stage4"
     out.mkdir(exist_ok=True)
 
-    # ---- 尺度对齐：MASt3R 点（真实米制）在输入机位的深度 vs ViPE 深度
+    # ---- scale alignment: depth of MASt3R points (real metres) in the input camera vs ViPE depth
     X = read_points(W / "4c4d" / "sparse" / "0" / "points3D.txt")
     Xc = (w_in[:3, :3] @ X.T).T + w_in[:3, 3]
     z_true = Xc[:, 2]
@@ -148,23 +148,23 @@ def main():
     k = float(np.median(ratio)) if len(ratio) > 50 else 1.0
     spread = float(np.median(np.abs(ratio - k)) / k) if len(ratio) > 50 else None
 
-    def rel(w2c):  # 相对输入相机的位姿，平移换到 ViPE 尺度
+    def rel(w2c):  # pose relative to the input camera, translation converted to ViPE scale
         T = w2c @ np.linalg.inv(w_in)
         T[:3, 3] *= k
         return T
 
     n = NUM_FRAMES
-    # ---- 评估轨迹：每帧都在评估机位
+    # ---- eval trajectory: every frame at the eval camera
     T_eval = np.stack([rel(w_ev)] * n)
     K_eval = np.stack([to_gen3c_K(K_ev, src_wh)] * n)
     np.savez(out / "gen3c_eval.npz", T=T_eval.astype(np.float32), K=K_eval.astype(np.float32))
 
-    # ---- 运镜轨迹：输入机位 → 评估机位（两个模型共用同一条）
+    # ---- camera-motion trajectory: input camera -> eval camera (shared by both models)
     path_w2c, s = interp_path(w_in, w_ev, n)
     K_path_full = np.stack([(1 - si) * K_in + si * K_ev for si in s])
     np.savez(out / "gen3c_path.npz", T=np.stack([rel(w) for w in path_w2c]).astype(np.float32),
              K=np.stack([to_gen3c_K(Kf, src_wh) for Kf in K_path_full]).astype(np.float32))
-    # 4C4D：世界坐标 w2c（米）、全分辨率焦距、时间戳（与 4C4D 读数据时相同：帧号 / 帧数 × 10）
+    # 4C4D: world w2c (metres), full-resolution focal length, timestamps (same as 4C4D's data loader: frame index / frame count x 10)
     np.savez(out / "4c4d_path.npz", w2c=path_w2c.astype(np.float32),
              fx=K_path_full[:, 0, 0].astype(np.float32), fy=K_path_full[:, 1, 1].astype(np.float32),
              width=src_wh[0], height=src_wh[1],

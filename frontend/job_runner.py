@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""前端的 GPU 任务执行器（独立进程，Flask 重启不影响）。用法：job_runner.py <job_id>
+"""Frontend GPU job runner (separate process, unaffected by Flask restarts). Usage: job_runner.py <job_id>
 
-任务类型（spec.json 里的 kind）：
-  export  导出场景预览（点云、机位、缩略图） → 存到 DATA/scenes/<模型>/
-  render  按轨迹渲染视频                     → DATA/jobs/<id>/render.mp4
-流程：检查 GPU（已有 atlas-render pod 就复用；有其他 atlas 任务在用 GPU 就拒绝）→ gpu-up（上限 0.5 小时）
-      → atlas-run 推送并启动 pod 任务 → 每 15 秒更新进度和花费 → 拉回结果 → gpu-down。
-所有开关 pod 都走护栏（gpu-up / gpu-down），护栏的时长上限、空闲检测、任务结束自动关机照常生效。
+Job kinds (kind in spec.json):
+  export  export a scene preview (point cloud, cameras, thumbnails) → saved to DATA/scenes/<model>/
+  render  render a video along a trajectory                        → DATA/jobs/<id>/render.mp4
+Flow: check GPU (reuse an existing atlas-render pod; refuse if another atlas job is using the GPU) → gpu-up (0.5 hour limit)
+      → atlas-run pushes and starts the pod task → update progress and cost every 15 seconds → pull results → gpu-down.
+All pod starts and stops go through the guard (gpu-up / gpu-down); its time limit, idle detection and auto-stop after runs still apply.
 
-ATLAS_FRONTEND_FAKE=1：模拟模式，不开 GPU，用合成数据走完整流程（测试界面用）。
+ATLAS_FRONTEND_FAKE=1: simulation mode, no GPU, runs the full flow on synthetic data (for testing the UI).
 """
 import datetime as dt
 import json
@@ -34,7 +34,7 @@ sys.path.insert(0, str(REPO / "runner"))
 
 
 class JobError(Exception):
-    """显示在任务栏的错误：稳定的 code + 参数，前端翻译；技术细节只写进 job.log。"""
+    """Error shown in the job bar: a stable code + params, translated by the frontend; technical details go only to job.log."""
     def __init__(self, code, **params):
         super().__init__(code)
         self.code, self.params = code, params
@@ -65,7 +65,7 @@ class Job:
         tmp.replace(self.status_path)
 
     def stage(self, code, **params):
-        """任务进度：只存 code 和参数，前端按当前语言显示。"""
+        """Job progress: store only the code and params; the frontend renders them in the current language."""
         self.update(stage_code=code, stage_params=params)
 
     def log(self, msg):
@@ -78,7 +78,7 @@ def sh(cmd, timeout=None):
     return r.returncode, (r.stdout + r.stderr)
 
 
-# ---------------------------------------------------------------- 真实 GPU 流程
+# ---------------------------------------------------------------- real GPU flow
 def ensure_pod(job):
     import atlas_gpu as g
     pods, _ = g.atlas_pods()
@@ -88,28 +88,28 @@ def ensure_pod(job):
         raise JobError("gpu_busy", name=other[0]["name"])
     mine = [p for p in active if p["name"] == POD_NAME]
     if mine:
-        job.log("复用已在运行的渲染 pod")
+        job.log("Reusing the already running render pod")
         p = mine[0]
         job.stage("reusing_gpu")
         job.update(cost_per_hr=p.get("cost") or 1.79, gpu_started=now().isoformat(timespec="seconds"), pod_id=p["id"])
         return
-    # RunPod 从创建 pod 起就计费，所以在调用 gpu-up 之前开始计时（宁可略微高估）
+    # RunPod bills from pod creation, so start the clock before calling gpu-up (better to slightly overestimate)
     t_start = now().isoformat(timespec="seconds")
     job.stage("starting_gpu")
     rc, out = sh([str(BIN / "gpu-up"), "--name", "render", "--hours", POD_HOURS, "--wait", "10"], timeout=900)
     job.log(out[-1500:])
     if rc != 0:
-        raise JobError("gpu_start_failed")      # 护栏的原始输出已写入 job.log
+        raise JobError("gpu_start_failed")      # the guard's raw output is already in job.log
     price = 1.79
     for line in out.splitlines():
-        if "估算花费" in line and "$" in line:
+        if "Est. cost" in line and "$" in line:
             try:
                 price = float(line.split("$")[1].split("/")[0])
             except (ValueError, IndexError):
                 pass
-    pod_id = next((l.split(":", 1)[1].strip() for l in out.splitlines() if l.startswith("pod ID")), None)
+    pod_id = next((l.split(":", 1)[1].strip() for l in out.splitlines() if l.startswith("Pod ID")), None)
     if not pod_id:
-        raise JobError("no_pod_id")             # 护栏仍会按时长上限关机
+        raise JobError("no_pod_id")             # the guard still stops the pod at its time limit
     job.update(cost_per_hr=price, gpu_started=t_start, pod_id=pod_id)
 
 
@@ -122,7 +122,7 @@ def run_on_pod(job, task, args, input_dir=None):
     cmd += [task, *args]
     job.stage("pushing")
     try:
-        sh(cmd, timeout=120)       # 启动用的 SSH 偶尔不返回，任务本身已经启动；超时后照常跟踪
+        sh(cmd, timeout=120)       # the launch SSH occasionally never returns though the run has started; keep tracking after the timeout
     except subprocess.TimeoutExpired:
         pass
     runs = sorted((Path.home() / "runs").glob(f"*-{run_name}"))
@@ -171,15 +171,16 @@ def run_on_pod(job, task, args, input_dir=None):
 
 
 def stop_pod(job):
-    # 按 pod ID 关闭并删除：按名字关，遇到同名的旧 pod 时护栏会拒绝（2026-10-15 实测因此没关掉）。
-    # 结果已拉回服务器，容器盘上没有需要保留的东西，删除可以避免同名 pod 越积越多
+    # Stop and delete by pod ID: stopping by name is refused by the guard when an old pod with the same name exists
+    # (2026-10-15: the pod was not stopped because of this).
+    # Results are already on the server and nothing on the container disk needs keeping; deleting avoids piling up same-named pods
     target = job.st.get("pod_id") or POD_NAME
     rc, out = sh([str(BIN / "gpu-down"), target, "--delete"], timeout=300)
     job.log(out[-500:])
     job.update(gpu_ended=now().isoformat(timespec="seconds"))
 
 
-# ---------------------------------------------------------------- 模拟流程
+# ---------------------------------------------------------------- simulated flow
 def fake_run(job, kind):
     job.stage("starting_gpu", fake=True)
     job.update(cost_per_hr=1.79, gpu_started=now().isoformat(timespec="seconds"))
@@ -206,7 +207,7 @@ def fake_run(job, kind):
     return out
 
 
-# ---------------------------------------------------------------- 主流程
+# ---------------------------------------------------------------- main flow
 def main(job_id):
     job = Job(job_id)
     kind = job.spec["kind"]
@@ -237,7 +238,7 @@ def main(job_id):
     except JobError as e:
         job.log(traceback.format_exc())
         job.update(state="failed", stage_code="failed", stage_params={}, error_code=e.code, error_params=e.params)
-    except Exception:  # noqa: BLE001  意外错误：页面显示通用提示，细节在日志里
+    except Exception:  # noqa: BLE001  unexpected error: the page shows a generic message, details are in the log
         job.log(traceback.format_exc())
         job.update(state="failed", stage_code="failed", stage_params={}, error_code="unexpected", error_params={})
     finally:

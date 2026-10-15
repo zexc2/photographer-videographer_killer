@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""CMU Panoptic → 4C4D（COLMAP 格式）+ GEN3C（单目视频）输入。在 pod 上运行（mast3r 环境的 python：numpy、opencv）。
+"""CMU Panoptic -> 4C4D (COLMAP format) + GEN3C (monocular video) inputs. Runs on the pod (python from the mast3r env: numpy, opencv).
 
-对一个序列：
-  1. 下载标定 JSON；按配置的起点截取 N 帧 HD 视频（ffmpeg 通过 HTTP 范围请求，只下载需要的片段），
-     同时把截出的片段存一份到 Global volume（raw/），下次直接从这里读，不再联网
-  2. 用标定的畸变参数去畸变 → images/camXX_YYYY.png（4C4D 只支持 PINHOLE）
-  3. 写 COLMAP 文本模型 sparse/0/{cameras,images}.txt：每个机位一条，单位换成米
-     （Panoptic 标定是厘米；3DGS 相机 zfar=100，用厘米会把 2.7 m 外的人裁掉）
-     points3D.txt 由 mast3r_posed_points.py 生成
-  4. GEN3C：输入机位 → gen3c/input.mp4；评估机位真值 → gen3c/eval_gt.mp4
-  5. meta.json：机位、内外参、评估机位相对 GEN3C 输入机位的位姿；previews/ 下放缩略图
+For one sequence:
+  1. Download the calibration JSON; trim N HD frames from the configured start (ffmpeg via HTTP range requests, downloading only the needed part),
+     and save the trimmed clips to Global volume (raw/) so later runs read them from there without going online
+  2. Undistort with the calibrated distortion parameters -> images/camXX_YYYY.png (4C4D only supports PINHOLE)
+  3. Write the COLMAP text model sparse/0/{cameras,images}.txt: one entry per camera, units converted to metres
+     (Panoptic calibration is in centimetres; the 3DGS camera has zfar=100, so centimetres would clip a person 2.7 m away)
+     points3D.txt is produced by mast3r_posed_points.py
+  4. GEN3C: input camera -> gen3c/input.mp4; eval camera ground truth -> gen3c/eval_gt.mp4
+  5. meta.json: cameras, intrinsics/extrinsics, eval camera pose relative to the GEN3C input camera; thumbnails under previews/
 
-用法: panoptic_prepare.py --config pod/configs/panoptic.json --seq 171204_pose1 --work DIR --data-root DIR
+Usage: panoptic_prepare.py --config pod/configs/panoptic.json --seq 171204_pose1 --work DIR --data-root DIR
 """
 import argparse
 import json
@@ -33,12 +33,12 @@ def log(msg):
 def run(cmd):
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
-        raise RuntimeError(f"命令失败: {' '.join(cmd[:6])} …\n{r.stderr[-1500:]}")
+        raise RuntimeError(f"command failed: {' '.join(cmd[:6])} ...\n{r.stderr[-1500:]}")
     return r.stdout
 
 
 def rotmat_to_qvec(R):
-    """旋转矩阵 → COLMAP 四元数 (qw, qx, qy, qz)，Shepperd 方法，数值稳定。"""
+    """Rotation matrix -> COLMAP quaternion (qw, qx, qy, qz), Shepperd's method, numerically stable."""
     t = np.trace(R)
     if t > 0:
         s = 0.5 / math.sqrt(t + 1.0)
@@ -61,7 +61,7 @@ def load_calibration(seq, endpoint, seq_root):
     p = seq_root / f"calibration_{seq}.json"
     if not p.exists():
         url = f"{endpoint}/webdata/dataset/{seq}/calibration_{seq}.json"
-        log(f"下载标定 {url}")
+        log(f"downloading calibration {url}")
         tmp = p.with_suffix(".part")
         urllib.request.urlretrieve(url, tmp)
         tmp.replace(p)
@@ -70,8 +70,8 @@ def load_calibration(seq, endpoint, seq_root):
         if c["type"] == "hd" and c["panel"] == 0:
             K = np.array(c["K"], dtype=np.float64)
             w, h = c["resolution"]
-            # 去畸变时同时把主点移到图像正中心：4C4D 读 PINHOLE 时只用焦距、默认主点居中，
-            # Panoptic 原始主点偏离中心最多约 18 像素，不处理会让每个机位都有系统性错位（2026-10-14 发现）
+            # While undistorting, also move the principal point to the exact image centre: 4C4D's PINHOLE reader uses only the focal length and assumes a centred principal point;
+            # Panoptic's original principal points are up to ~18 px off-centre, which would misalign every camera systematically (found 2026-10-14)
             K_new = K.copy()
             K_new[0, 2], K_new[1, 2] = w / 2.0, h / 2.0
             cams[c["node"]] = {
@@ -79,27 +79,27 @@ def load_calibration(seq, endpoint, seq_root):
                 "K_orig": K,
                 "dist": np.array(c["distCoef"], dtype=np.float64),
                 "R": np.array(c["R"], dtype=np.float64),
-                "t": np.array(c["t"], dtype=np.float64).reshape(3) / 100.0,  # 厘米 → 米
+                "t": np.array(c["t"], dtype=np.float64).reshape(3) / 100.0,  # centimetres -> metres
                 "size": tuple(c["resolution"]),
             }
     return cams
 
 
 def fetch_frames(seq, cam, cfg, seq_root, raw_dir, n, start_frame):
-    """取 n 帧到 raw_dir/%04d.png。优先用 Global volume 上的存档片段，没有就从网上截取并存档。"""
+    """Get n frames into raw_dir/%04d.png. Prefer the archived clip on Global volume; otherwise trim from the web and archive it."""
     raw_dir.mkdir(parents=True, exist_ok=True)
     if len(list(raw_dir.glob("*.png"))) >= n:
         return
     archive = seq_root / "raw" / f"hd_00_{cam:02d}_f{start_frame}_n{n}.mp4"
     if archive.exists():
-        log(f"  cam{cam:02d}: 从存档解码 {archive.name}")
+        log(f"  cam{cam:02d}: decoding from archive {archive.name}")
         run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(archive), "-frames:v", str(n),
              "-start_number", "0", str(raw_dir / "%04d.png")])
     else:
         url = f"{cfg['endpoint']}/webdata/dataset/{seq}/videos/hd_shared_crf20/hd_00_{cam:02d}.mp4"
         start = start_frame / (30000 / 1001)
-        log(f"  cam{cam:02d}: 从网上截取 {n} 帧（起点 {start:.3f}s）")
-        # -ss 放在 -i 前 + 解码输出 = 精确定位到帧（各 HD 机位硬件同步，同一帧号即同一时刻）
+        log(f"  cam{cam:02d}: trimming {n} frames from the web (start {start:.3f}s)")
+        # -ss before -i + decoding the output = frame-accurate seek (HD cameras are hardware-synced, so the same frame index is the same instant)
         run(["ffmpeg", "-loglevel", "error", "-y", "-ss", f"{start:.4f}", "-i", url, "-frames:v", str(n),
              "-start_number", "0", str(raw_dir / "%04d.png")])
         archive.parent.mkdir(parents=True, exist_ok=True)
@@ -109,12 +109,12 @@ def fetch_frames(seq, cam, cfg, seq_root, raw_dir, n, start_frame):
         tmp.replace(archive)
     got = len(list(raw_dir.glob("*.png")))
     if got < n:
-        raise RuntimeError(f"cam{cam:02d} 只取到 {got}/{n} 帧")
+        raise RuntimeError(f"cam{cam:02d}: got only {got}/{n} frames")
 
 
 def undistort_cam(cam, c, raw_dir, img_dir, n):
     w, h = c["size"]
-    # 原始内参 + 畸变 → 主点居中的新针孔相机
+    # original intrinsics + distortion -> new pinhole camera with a centred principal point
     m1, m2 = cv2.initUndistortRectifyMap(c["K_orig"], c["dist"], None, c["K"], (w, h), cv2.CV_32FC1)
     for i in range(n):
         dst = img_dir / f"cam{cam:02d}_{i:04d}.png"
@@ -122,20 +122,20 @@ def undistort_cam(cam, c, raw_dir, img_dir, n):
             continue
         img = cv2.imread(str(raw_dir / f"{i:04d}.png"))
         if img is None:
-            raise RuntimeError(f"读不到 {raw_dir}/{i:04d}.png")
+            raise RuntimeError(f"cannot read {raw_dir}/{i:04d}.png")
         cv2.imwrite(str(dst), cv2.remap(img, m1, m2, cv2.INTER_LINEAR))
 
 
 def write_colmap(cams, use, sparse_dir):
     sparse_dir.mkdir(parents=True, exist_ok=True)
     with open(sparse_dir / "cameras.txt", "w") as f:
-        f.write("# CAMERA_ID MODEL WIDTH HEIGHT fx fy cx cy（Panoptic 标定，已去畸变、主点已移到中心）\n")
+        f.write("# CAMERA_ID MODEL WIDTH HEIGHT fx fy cx cy (Panoptic calibration, undistorted, principal point moved to centre)\n")
         for i, cam in enumerate(use, 1):
             K = cams[cam]["K"]
             w, h = cams[cam]["size"]
             f.write(f"{i} PINHOLE {w} {h} {K[0,0]:.6f} {K[1,1]:.6f} {K[0,2]:.6f} {K[1,2]:.6f}\n")
     with open(sparse_dir / "images.txt", "w") as f:
-        f.write("# IMAGE_ID QW QX QY QZ TX TY TZ CAMERA_ID NAME（世界→相机，单位米）\n")
+        f.write("# IMAGE_ID QW QX QY QZ TX TY TZ CAMERA_ID NAME (world->camera, metres)\n")
         for i, cam in enumerate(use, 1):
             q = rotmat_to_qvec(cams[cam]["R"])
             t = cams[cam]["t"]
@@ -175,15 +175,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
     ap.add_argument("--seq", required=True)
-    ap.add_argument("--work", required=True, help="容器盘上的工作目录（生成的数据集放这里）")
-    ap.add_argument("--data-root", required=True, help="Global volume 上的 panoptic 目录（存标定和截取的片段）")
-    ap.add_argument("--frames", type=int, help="覆盖配置里的帧数（测试用）")
+    ap.add_argument("--work", required=True, help="work dir on the container disk (the generated dataset goes here)")
+    ap.add_argument("--data-root", required=True, help="panoptic dir on Global volume (stores calibration and trimmed clips)")
+    ap.add_argument("--frames", type=int, help="override the frame count from the config (for testing)")
     a = ap.parse_args()
 
     cfg = json.load(open(a.config))
     s = next((x for x in cfg["sequences"] if x["name"] == a.seq), None)
     if s is None:
-        sys.exit(f"配置里没有序列 {a.seq}")
+        sys.exit(f"sequence {a.seq} not in config")
     n = a.frames or cfg["num_frames"]
     start_frame = int(round(s["start_sec"] * 30000 / 1001))
     train, ev, g_in = s["train_cams"], s["eval_cam"], s["gen3c_input_cam"]
@@ -191,7 +191,7 @@ def main():
     seq_root = Path(a.data_root) / a.seq
     seq_root.mkdir(parents=True, exist_ok=True)
     work = Path(a.work)
-    ds = work / "4c4d"            # 4C4D 数据集目录
+    ds = work / "4c4d"            # 4C4D dataset dir
     img_dir = ds / "images"
     img_dir.mkdir(parents=True, exist_ok=True)
     prev = work / "previews"
@@ -200,15 +200,15 @@ def main():
     cams = load_calibration(a.seq, cfg["endpoint"], seq_root)
     missing = [c for c in use if c not in cams]
     if missing:
-        sys.exit(f"标定里没有机位 {missing}")
+        sys.exit(f"cameras missing from calibration: {missing}")
 
-    log(f"{a.seq}: 机位 {use}，帧 {start_frame}..{start_frame + n - 1}")
+    log(f"{a.seq}: cameras {use}, frames {start_frame}..{start_frame + n - 1}")
     for cam in use:
         raw = work / "raw" / f"cam{cam:02d}"
         fetch_frames(a.seq, cam, cfg, seq_root, raw, n, start_frame)
         undistort_cam(cam, cams[cam], raw, img_dir, n)
-        subprocess.run(["rm", "-rf", str(raw)])  # 原始帧用完即删，省容器盘
-    log("去畸变完成")
+        subprocess.run(["rm", "-rf", str(raw)])  # delete raw frames once used, to save container disk
+    log("undistortion done")
 
     write_colmap(cams, use, ds / "sparse" / "0")
 
@@ -217,7 +217,7 @@ def main():
     encode_video(img_dir, g_in, n, g / "input.mp4")
     encode_video(img_dir, ev, n, g / "eval_gt.mp4")
 
-    # 评估机位相对 GEN3C 输入机位的位姿（输入相机坐标系 → 评估相机坐标系，米）
+    # eval camera pose relative to the GEN3C input camera (input camera frame -> eval camera frame, metres)
     T_rel = w2c(cams[ev]) @ np.linalg.inv(w2c(cams[g_in]))
     center = lambda c: -c["R"].T @ c["t"]
     baseline = float(np.linalg.norm(center(cams[ev]) - center(cams[g_in])))
@@ -233,13 +233,13 @@ def main():
                                     "size": list(cams[c]["size"])} for c in use},
         "eval_from_gen3c_input": {"T": T_rel.tolist(), "baseline_m": round(baseline, 3),
                                   "rotation_deg": round(angle, 1)},
-        "license": "CMU Panoptic Studio Dataset：仅限非商业研究用途",
+        "license": "CMU Panoptic Studio Dataset: non-commercial research use only",
     }
     json.dump(meta, open(work / "meta.json", "w"), indent=2, ensure_ascii=False)
     labels = {c: f"cam{c:02d}" + (" EVAL" if c == ev else " IN" if c in train else "") +
                  (" +GEN3C" if c == g_in else "") for c in use}
     contact_sheet(img_dir, use, labels, prev / f"{a.seq}_cams.jpg")
-    log(f"完成：{len(use)} 个机位 × {n} 帧；评估机位距 GEN3C 输入 {baseline:.2f} m、转角 {angle:.1f}°")
+    log(f"done: {len(use)} cameras x {n} frames; eval camera is {baseline:.2f} m from the GEN3C input, rotated {angle:.1f}°")
 
 
 if __name__ == "__main__":

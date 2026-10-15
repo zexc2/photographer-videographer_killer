@@ -1,5 +1,5 @@
-"""模拟模式用的合成场景：格式与 pod 上 fourc4d_direct.py export 的输出完全相同（scene.json、points.bin、thumbs/）。
-21 个机位排成一排朝前（模仿 N3V 的前向阵列），点云是一个房间加一个"人"。只用于测试界面，不是真实数据。"""
+"""Synthetic scene for fake mode: same format as the output of fourc4d_direct.py export on the pod (scene.json, points.bin, thumbs/).
+21 cameras in a forward-facing row (mimicking the N3V forward array); the point cloud is a room plus a "person". For UI testing only, not real data."""
 import json
 import math
 import struct
@@ -10,7 +10,7 @@ import numpy as np
 
 
 def _w2c(center, yaw):
-    """OpenCV 约定：相机朝 +z（世界），绕世界 y 轴转 yaw。"""
+    """OpenCV convention: camera looks along +z (world), yawed about the world y axis."""
     c, s = math.cos(yaw), math.sin(yaw)
     R_c2w = np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
     w2c = np.eye(4)
@@ -30,7 +30,7 @@ def write_fake_scene(out):
                                "fx": 1400.0, "fy": 1400.0, "cx": 1352.0, "cy": 1014.0, "width": 2704, "height": 2028}
     rng = np.random.default_rng(0)
     n = 60000
-    # 房间：后墙 z=4、地面 y=1.2、左右墙 x=±2.5（y 朝下）
+    # Room: back wall z=4, floor y=1.2, side walls x=±2.5 (y points down)
     wall = np.c_[rng.uniform(-2.5, 2.5, n), rng.uniform(-1.5, 1.2, n), np.full(n, 4.0)]
     floor = np.c_[rng.uniform(-2.5, 2.5, n), np.full(n, 1.2), rng.uniform(0.5, 4.0, n)]
     side = np.c_[np.sign(rng.uniform(-1, 1, n)) * 2.5, rng.uniform(-1.5, 1.2, n), rng.uniform(0.5, 4.0, n)]

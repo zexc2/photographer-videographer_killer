@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# 第一次开 pod 时运行：确认挂载 / GPU / 磁盘，并实测 Global volume 和容器盘的读写速度。
+# Run on the first pod start: checks mounts / GPU / disk and measures Global volume and container disk read/write speed.
 RUN_DIR=$1
 source "$(dirname "$0")/../lib/common.sh"
 OUT=$RUN_DIR/out
-speed() {  # speed <目录> <大小MB>：返回 "写MB/s 读MB/s"
+speed() {  # speed <dir> <size MB>: prints "write_MB/s read_MB/s"
   local f=$1/.atlas_speedtest.bin n=$2 t0 t1 t2
   t0=$(date +%s.%N); dd if=/dev/urandom of="$f" bs=1M count="$n" status=none conv=fsync; t1=$(date +%s.%N)
   sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
@@ -13,7 +13,7 @@ speed() {  # speed <目录> <大小MB>：返回 "写MB/s 读MB/s"
 }
 read -r vw vr < <(speed "$ATLAS_VOL" 2048)
 read -r lw lr < <(speed "$ATLAS_LOCAL" 2048)
-# 小文件：Global volume 上写 500 个 4KB 文件
+# Small files: write 500 x 4KB files to Global volume
 t0=$(date +%s.%N); mkdir -p "$ATLAS_VOL/.atlas_small"
 for i in $(seq 500); do head -c 4096 /dev/urandom > "$ATLAS_VOL/.atlas_small/$i"; done; t1=$(date +%s.%N)
 rm -rf "$ATLAS_VOL/.atlas_small"

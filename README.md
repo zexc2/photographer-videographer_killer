@@ -1,97 +1,97 @@
 # photographer-videographer_killer
 
-> 360 / 多机位素材 → AI 场景重建 → "游机位"运镜视频
-> ERA MOMENT 内部验证项目 · USF BUS 205 课程项目
+> 360 / multi-camera footage → AI scene reconstruction → moving-camera ("virtual camera move") video
+> ERA MOMENT internal validation project · USF BUS 205 course project
 
-## 快速开始
+## Quick start
 
-想自己跑起来？看 **[DEPLOY.md](DEPLOY.md)**，6 步完成：
+Want to run it yourself? See **[DEPLOY.md](DEPLOY.md)** — 6 steps:
 
-1. 注册 [RunPod](https://www.runpod.io/) 并充值，**推荐机型 A100 80GB**；
-2. 建 Global volume 和 API key；
-3. 克隆仓库；
-4. 运行 `./deploy.sh`；
-5. 训练样例模型（一次性，约 4 小时、约 $8）；
-6. 打开运镜工作台。
+1. Sign up for [RunPod](https://www.runpod.io/) and add credit; **recommended GPU: A100 80GB**;
+2. Create a Global volume and API keys;
+3. Clone the repo;
+4. Run `./deploy.sh`;
+5. Train the sample model (one-time, about 4 hours, about $8);
+6. Open the camera-move workbench.
 
-之后每渲染一段运镜，约 1.5 分钟、$0.05。
+After that, each camera move you render takes about 1.5 minutes and $0.05.
 
-![流程](docs/workflow.svg)
+![Workflow](docs/workflow.svg)
 
-## 项目背景
+## Background
 
-ERA MOMENT 做活动摄影摄像。美国 8 小时活动摄像师报价很少低于 **$1500**。
-本项目验证：活动现场只放 1 台 360 相机（Insta360 X3）+ 几台三脚架固定手机，
-事后用 AI 重建场景并生成带相机运动的视频，能否以**明显低于 $1500 的 GPU 成本**替代或补充现场摄像师。
+ERA MOMENT does event photography and videography. In the US, a videographer for an 8-hour event rarely quotes below **$1,500**.
+This project tests whether we can put just 1 360 camera (Insta360 X3) + a few phones on tripods at an event,
+then use AI to reconstruct the scene afterwards and generate video with camera motion — replacing or supplementing an on-site videographer at a **GPU cost well below $1,500**.
 
-## 阶段规划
+## Stages
 
-| 阶段 | 内容 | 状态 |
+| Stage | Scope | Status |
 |---|---|---|
-| 0 | 仓库初始化 | ✅ |
-| 1 | GPU 成本护栏（开/关/巡检 RunPod pod），见 [guard/](guard/README.md) | ✅ |
-| 2 | pod 环境脚本（GEN3C / ViPE / 4C4D），见 [pod/](pod/README.md) | ✅ |
-| 3 | CMU Panoptic 数据准备，见 [docs/stage3-data.md](docs/stage3-data.md) | ✅ |
-| 4 | GEN3C vs 4C4D 基线对比，**报告见 [docs/report-baseline.md](docs/report-baseline.md)** | ✅ 第一轮完成 |
-| 5 | 运镜工作台（Flask）：3D 预览 → 设定运镜 → GPU 渲染，见 [frontend/](frontend/README.md) | ✅ 样例场景版（真实 GPU 测试通过）；上传素材待做 |
-| 6 | 接入 360 转透视工具 | ⏳ |
+| 0 | Repo setup | ✅ |
+| 1 | GPU cost guard (start / stop / monitor RunPod pods), see [guard/](guard/README.md) | ✅ |
+| 2 | Pod environment scripts (GEN3C / ViPE / 4C4D), see [pod/](pod/README.md) | ✅ |
+| 3 | CMU Panoptic data preparation, see [docs/stage3-data.md](docs/stage3-data.md) | ✅ |
+| 4 | GEN3C vs 4C4D baseline comparison, **report: [docs/report-baseline.md](docs/report-baseline.md)** | ✅ First round done |
+| 5 | Camera-move workbench (Flask): 3D preview → set camera path → GPU render, see [frontend/](frontend/README.md) | ✅ Sample-scene version (real GPU test passed); footage upload still to do |
+| 6 | Integrate the 360-to-perspective tool | ⏳ |
 
-详细进度、问题、耗时与花费见 [PROGRESS.md](PROGRESS.md)。
+Detailed progress, issues, time and spending: [PROGRESS.md](PROGRESS.md).
 
-## 第一阶段结果（2026-10-15）
+## Phase 1 results (2026-10-15)
 
-在 CMU Panoptic 上，从一个训练时没用过的机位生成画面，和真实画面比较：
+On CMU Panoptic, we generated frames from a camera that was not used in training and compared them with the real footage:
 
-| 方案 | 输入 | PSNR ↑ | SSIM ↑ | LPIPS ↓ | GPU 成本 |
+| Approach | Input | PSNR ↑ | SSIM ↑ | LPIPS ↓ | GPU cost |
 |---|---|---|---|---|---|
-| GEN3C | 1 个机位 | 15.96 | 0.661 | 0.578 | 约 $0.61 / 每 5 秒输出 |
-| **4C4D** | 4 个机位 | **21.74** | **0.818** | **0.378** | 约 $4.71 / 每 10 秒素材 |
+| GEN3C | 1 camera | 15.96 | 0.661 | 0.578 | about $0.61 per 5 s of output |
+| **4C4D** | 4 cameras | **21.74** | **0.818** | **0.378** | about $4.71 per 10 s of footage |
 
-另外在论文用的 N3V 数据上复现了 4C4D（PSNR 24.16，论文 23.72），说明我们的环境没问题；Panoptic 上效果一般，主要是机位太分散，见 [复现报告](docs/reproduction-n3v.md)。
+We also reproduced 4C4D on the N3V data used in the paper (PSNR 24.16 vs. 23.72 in the paper), which shows our environment is fine. Results on Panoptic are mediocre mainly because the cameras are too spread out; see the [reproduction report](docs/reproduction-n3v.md).
 
-做 3–5 分钟的 AI 运镜精华片段，GPU 成本约 $22–141，远低于 $1500 的摄像师报价；但覆盖整场 8 小时活动会超出 $1500。4C4D 目前的代码不能商用。详见 [对比报告](docs/report-baseline.md)。
+Producing a 3–5 minute AI camera-move highlight reel costs about $22–141 in GPU time, far below a $1,500 videographer quote; covering an entire 8-hour event, however, would exceed $1,500. 4C4D's current code cannot be used commercially. Details in the [comparison report](docs/report-baseline.md).
 
-## 架构
+## Architecture
 
-- **调度服务器**（2 核 4G）：只跑前端、调度脚本、存小文件，不跑任何模型。
-- **RunPod GPU pod**（A100 80GB，必要时 H100）：所有 3D 重建、训练、视频生成。
-- **RunPod Global volume**（不绑机房，pod 内路径 `$ATLAS_VOL`）：只存冷数据，包括模型权重、原始数据集、环境打包文件、最终结果。
-- **pod 容器盘**（`$ATLAS_LOCAL`，200 GB，stop 后清空）：conda 环境、工作目录、中间文件、checkpoint。
-- 详见 [docs/storage-and-env.md](docs/storage-and-env.md)。
+- **Orchestration server** (2 cores, 4 GB): runs only the frontend and orchestration scripts and stores small files; no models run here.
+- **RunPod GPU pod** (A100 80GB, H100 if needed): all 3D reconstruction, training and video generation.
+- **RunPod Global volume** (not tied to a data center; path inside the pod is `$ATLAS_VOL`): cold data only — model weights, raw datasets, environment packs, final results.
+- **Pod container disk** (`$ATLAS_LOCAL`, 200 GB, wiped on stop): conda environments, working directories, intermediate files, checkpoints.
+- Details: [docs/storage-and-env.md](docs/storage-and-env.md).
 
-## 目录结构
+## Repository layout
 
 ```
 .
-├── DEPLOY.md         部署指南（从注册 RunPod 开始）
-├── deploy.sh         一键部署 / 自检（./deploy.sh --check）
-├── requirements.txt  服务器端 Python 依赖（flask、numpy）
-├── README.md         项目说明
-├── PROGRESS.md       每阶段进度、问题、耗时、花费
-├── CLAUDE.md         项目简报 / 工作约定
-├── frontend/         运镜工作台（Flask + three.js，只监听 127.0.0.1）
-├── guard/            GPU 护栏：gpu-up / gpu-down / gpu-status / gpu-guard + 离线测试
-├── runner/           atlas-run：服务器 → pod 的任务执行器
-├── pod/              pod 端：环境安装（GEN3C / ViPE / 4C4D）、任务脚本、模型列表
-└── docs/             报告与设计文档
+├── DEPLOY.md         Deployment guide (starting from signing up for RunPod)
+├── deploy.sh         One-step deploy / self-check (./deploy.sh --check)
+├── requirements.txt  Server-side Python dependencies (flask, numpy)
+├── README.md         Project overview
+├── PROGRESS.md       Per-stage progress, issues, time, spending
+├── CLAUDE.md         Project brief / working conventions
+├── frontend/         Camera-move workbench (Flask + three.js, listens on 127.0.0.1 only)
+├── guard/            GPU guard: gpu-up / gpu-down / gpu-status / gpu-guard + offline tests
+├── runner/           atlas-run: server → pod job runner
+├── pod/              Pod side: environment setup (GEN3C / ViPE / 4C4D), job scripts, model list
+└── docs/             Reports and design docs
 ```
 
-## 第三方模型与数据许可
+## Third-party model and data licenses
 
-本仓库**不包含**任何第三方模型权重、数据集或其代码副本，只提供链接和调用脚本。使用前请自行阅读并遵守各自许可：
+This repository **does not contain** any third-party model weights, datasets, or copies of their code — only links and the scripts that call them. Read and comply with each license before use:
 
-| 名称 | 链接 | 许可（以官方页面为准） | 能否商用 |
+| Name | Link | License (the official page is authoritative) | Commercial use? |
 |---|---|---|---|
-| CMU Panoptic Studio Dataset | http://domedb.perception.cs.cmu.edu/ | 仅限非商业研究，见官网使用条款 | 不可以 |
-| GEN3C（代码） | https://github.com/nv-tlabs/GEN3C | Apache-2.0 | 可以 |
-| GEN3C-Cosmos-7B / Cosmos-Tokenize1（权重） | https://huggingface.co/nvidia/GEN3C-Cosmos-7B | [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license) | 可以，但关闭安全护栏会终止许可（见 pod/README.md） |
-| T5-11B（GEN3C 的文本编码器） | https://huggingface.co/google-t5/t5-11b | Apache-2.0 | 可以 |
-| ViPE | https://github.com/nv-tlabs/vipe | Apache-2.0（Unik3D 部分 CC BY-NC-SA 4.0）；自动下载的深度模型各有许可 | 代码可以，部分模型不可以 |
-| 4C4D（CVPR 2026） | https://github.com/yangzf-1023/4C4D | MIT，但内含 Inria 3DGS 光栅化器（非商业） | 不可以 |
-| MASt3R | https://github.com/naver/mast3r | CC BY-NC-SA 4.0；checkpoint 另受训练数据集许可约束 | 不可以 |
+| CMU Panoptic Studio Dataset | http://domedb.perception.cs.cmu.edu/ | Non-commercial research only; see the site's terms of use | No |
+| GEN3C (code) | https://github.com/nv-tlabs/GEN3C | Apache-2.0 | Yes |
+| GEN3C-Cosmos-7B / Cosmos-Tokenize1 (weights) | https://huggingface.co/nvidia/GEN3C-Cosmos-7B | [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license) | Yes, but disabling the safety guardrails terminates the license (see pod/README.md) |
+| T5-11B (GEN3C's text encoder) | https://huggingface.co/google-t5/t5-11b | Apache-2.0 | Yes |
+| ViPE | https://github.com/nv-tlabs/vipe | Apache-2.0 (Unik3D portion CC BY-NC-SA 4.0); auto-downloaded depth models each have their own licenses | Code yes, some models no |
+| 4C4D (CVPR 2026) | https://github.com/yangzf-1023/4C4D | MIT, but bundles the Inria 3DGS rasterizer (non-commercial) | No |
+| MASt3R | https://github.com/naver/mast3r | CC BY-NC-SA 4.0; checkpoints are additionally bound by their training-dataset licenses | No |
 
-> 注：CMU Panoptic 与 MASt3R 等为非商业许可，本项目第一阶段仅做学术/技术验证；若进入商业使用需另行评估许可。
+> Note: CMU Panoptic, MASt3R and others are non-commercial licenses. Phase 1 of this project is academic / technical validation only; commercial use would require a separate license review.
 
-## 安全约定
+## Security rules
 
-公开仓库，不提交任何密钥、token、权重、数据集、视频、点云、训练产出、日志、pod ID 或 IP；单个文件不超过 10MB。
+This is a public repo. Never commit any keys, tokens, weights, datasets, videos, point clouds, training outputs, logs, pod IDs or IPs; no single file over 10 MB.

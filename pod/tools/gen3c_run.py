@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""用官方 gen3c_dynamic.py 跑多条自定义轨迹，模型只加载一次。在 gen3c 环境里、GEN3C 仓库目录下运行。
+"""Run several custom trajectories with the official gen3c_dynamic.py, loading the model only once. Run in the gen3c env from the GEN3C repo dir.
 
-官方命令行只支持预设运镜（left / right / clockwise …），而且 batch 模式下每个任务都读同一个 --vipe_path。
-这里只替换两个函数，其余流程（缓存、渲染、扩散生成、保存）完全是官方代码：
-  load_vipe_data             → 按任务顺序读各自的 ViPE 结果
-  generate_camera_trajectory → 返回该任务的轨迹：新 w2c[f] = T[f] @ ViPE 输入相机 w2c[f]，内参 K[f]
-安全护栏、提示词增强的处理和官方脚本 __main__ 完全一致（官方脚本强制关闭两者，见 pod/README.md 的许可说明）。
+The official CLI only supports preset camera moves (left / right / clockwise ...), and in batch mode every job reads the same --vipe_path.
+Only two functions are replaced here; everything else (cache, rendering, diffusion generation, saving) is upstream code:
+  load_vipe_data             -> reads each job's own ViPE result, in job order
+  generate_camera_trajectory -> returns that job's trajectory: new w2c[f] = T[f] @ ViPE input camera w2c[f], intrinsics K[f]
+Guardrail and prompt-upsampling handling is identical to the official script's __main__ (which forces both off; see the license notes in pod/README.md).
 
-用法（cwd = GEN3C 仓库）：
+Usage (cwd = GEN3C repo):
   CUDA_HOME=$ENV PYTHONPATH=. python gen3c_run.py --jobs jobs.json --out OUTDIR [--offload]
   jobs.json: [{"name": "pose1_eval", "vipe": ".../gen3c/vipe", "traj": ".../stage4/gen3c_eval.npz"}, ...]
 """
@@ -27,7 +27,7 @@ def main():
     ap.add_argument("--jobs", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--checkpoint_dir", default="checkpoints")
-    ap.add_argument("--offload", action="store_true", help="把 T5 文本编码器放到 CPU（显存不够时用）")
+    ap.add_argument("--offload", action="store_true", help="put the T5 text encoder on CPU (use when VRAM is short)")
     a = ap.parse_args()
 
     jobs = json.load(open(a.jobs))
@@ -49,7 +49,7 @@ def main():
     def load_for_job(vipe_root_or_mp4=None, **kw):
         state["job"] = queue.pop(0)
         state["t0"] = time.time()
-        print(f"[gen3c_run] 任务 {state['job']['name']}：读取 {state['job']['vipe']}", flush=True)
+        print(f"[gen3c_run] job {state['job']['name']}: reading {state['job']['vipe']}", flush=True)
         return orig_load(vipe_root_or_mp4=state["job"]["vipe"], **kw)
 
     def traj_for_job(trajectory_type, initial_w2c, initial_intrinsics, num_frames, movement_distance,
@@ -67,7 +67,7 @@ def main():
         name = state["job"]["name"]
         shutil.copy(video_save_path, out / f"{name}.mp4")
         timings[name] = round(time.time() - state["t0"], 1)
-        print(f"[gen3c_run] 任务 {name} 完成，用时 {timings[name]}s → {out / (name + '.mp4')}", flush=True)
+        print(f"[gen3c_run] job {name} done in {timings[name]}s -> {out / (name + '.mp4')}", flush=True)
 
     gd.load_vipe_data = load_for_job
     gd.generate_camera_trajectory = traj_for_job
@@ -86,7 +86,7 @@ def main():
     if a.offload:
         sys.argv += ["--offload_text_encoder_model"]
     args = gd.parse_arguments()
-    # 与官方 gen3c_dynamic.py 的 __main__ 一致
+    # Same as the official gen3c_dynamic.py __main__
     args.disable_guardrail = True
     args.disable_prompt_upsampler = True
 
@@ -97,14 +97,14 @@ def main():
     json.dump({"jobs": timings, "total_s": total, "missing": missing,
                "peak_vram_gib": round(torch.cuda.max_memory_allocated() / 2 ** 30, 1)},
               open(out / "gen3c_timing.json", "w"), indent=2)
-    print(f"[gen3c_run] 全部完成，总用时 {total}s（含加载模型）；未完成：{missing or '无'}", flush=True)
+    print(f"[gen3c_run] all done, {total}s total (incl. model load); unfinished: {missing or 'none'}", flush=True)
     if missing:
         sys.exit(1)
 
 
 if __name__ == "__main__":
-    # 报错后进程曾经挂住不退出（实测 2026-10-14：报 FileNotFoundError 后卡了 8 分钟），
-    # 推测是加载过程中起的后台线程。这里统一用 os._exit 强制结束，返回码照常
+    # After an error the process used to hang instead of exiting (seen 2026-10-14: hung 8 minutes after a FileNotFoundError),
+    # presumably due to background threads started during loading. Force exit with os._exit here; the exit code is unchanged
     import os
     import traceback
     try:

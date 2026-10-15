@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""生成 /showcase 展示页的素材（只用已有结果，不开 GPU）。
+"""Build assets for the /showcase page (uses existing results only, no GPU).
 
-输出到 DATA/showcase/（不在仓库里）：
-  media/*.mp4   H.264 + faststart，浏览器可直接播放，单个 ≤ 20 MB
-  media/*.jpg   机位缩略图
-  showcase.json 页面用到的数字和文件名（只放数字、文件名和固定英文文本，不放任何路径、ID）
+Output goes to DATA/showcase/ (not in the repo):
+  media/*.mp4   H.264 + faststart, plays directly in browsers, ≤ 20 MB each
+  media/*.jpg   camera thumbnails
+  showcase.json numbers and file names used by the page (numbers, file names and fixed English text only; no paths or IDs)
 
-用法：python3 frontend/showcase_build.py      （重复运行会覆盖）
+Usage: python3 frontend/showcase_build.py      (re-running overwrites)
 """
 import json
 import math
@@ -25,7 +25,7 @@ OUT = DATA / "showcase"
 MEDIA = OUT / "media"
 MAX_BYTES = 20 * 1024 * 1024
 
-# 已有结果的位置（相对 ~/runs 或前端数据目录）
+# Locations of existing results (relative to ~/runs or the frontend data directory)
 SRC = {
     "baseline": RUNS / "20261014-070012-baseline/out",
     "fourc4d": RUNS / "20261014-223624-fourc4d/out",
@@ -43,7 +43,7 @@ VIDEOS = {
 
 
 def encode(src, dst):
-    """H.264 High、yuv420p、faststart、无音轨；超过 20 MB 就提高 CRF 重编码。"""
+    """H.264 High, yuv420p, faststart, no audio; re-encode with a higher CRF if over 20 MB."""
     for crf in (18, 22, 26, 30):
         subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(src), "-an", "-c:v", "libx264",
                         "-profile:v", "high", "-preset", "slow", "-crf", str(crf), "-pix_fmt", "yuv420p",
@@ -51,7 +51,7 @@ def encode(src, dst):
                         "-map_metadata", "-1", str(dst)], check=True)
         if dst.stat().st_size <= MAX_BYTES:
             return
-    raise SystemExit(f"{dst.name} 压缩后仍超过 20 MB")
+    raise SystemExit(f"{dst.name} is still over 20 MB after compression")
 
 
 def probe(path):
@@ -64,7 +64,7 @@ def probe(path):
 
 
 def azimuths(cams, up, subject):
-    """机位投影到地面后，绕被摄主体的方位角（度）。0° = 机位平均所在的方向。"""
+    """Azimuth (degrees) of each camera around the subject after projecting onto the ground. 0° = mean camera direction."""
     up = up / np.linalg.norm(up)
     v = np.mean([c - subject for c in cams.values()], 0)
     v -= up * (v @ up)
@@ -90,7 +90,7 @@ def panoptic_layout():
         R, t = np.array(c["R"]), np.array(c["t"]).reshape(3)
         centers[k], fwd[k] = -R.T @ t, R[2]
         ups.append(-R[1])
-    # 主体位置：离所有光轴最近的点（Panoptic 机位环绕主体，光轴交汇处就是人）
+    # Subject position: the point closest to all optical axes (Panoptic cameras surround the subject, so the axes meet at the person)
     A, b = np.zeros((3, 3)), np.zeros(3)
     for k in centers:
         f = fwd[k] / np.linalg.norm(fwd[k])
@@ -115,7 +115,7 @@ def n3v_layout():
         ups.append(-R[1])
     buf = (SRC["n3v_scene"] / "points.bin").read_bytes()
     n = int(np.frombuffer(buf[:4], np.uint32)[0])
-    # N3V 机位朝同一方向、光轴近乎平行，求交点不稳定：用点云中位数当主体位置
+    # N3V cameras face the same way with near-parallel axes, so intersection is unstable: use the point-cloud median as the subject position
     subject = np.median(np.frombuffer(buf[4:4 + 12 * n], np.float32).reshape(-1, 3), 0)
     az = azimuths(centers, np.mean(ups, 0), subject)
     train = ["cam01", "cam10", "cam13", "cam20"]
@@ -126,12 +126,12 @@ def n3v_layout():
 
 
 def crop_panoptic_tiles():
-    """阶段 3 的机位拼图是 3×2（每格 480×270），拆成单张，标签由页面用大字重新写。"""
+    """The stage 3 camera mosaic is 3×2 (480×270 per tile); split it into single images. The page redraws labels in large type."""
     sheet = SRC["baseline"] / "171204_pose1/171204_pose1_cams.jpg"
     order = ["cam00", "cam05", "cam08", "cam24", "cam25"]
     for i, name in enumerate(order):
         x, y = (i % 3) * 480, (i // 3) * 270
-        # 跳过左上角烧录的标签（约 30 px 高）
+        # Skip the burned-in label in the top-left corner (about 30 px tall)
         subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(sheet), "-vf",
                         f"crop=480:236:{x}:{y + 34}", "-q:v", "3", str(MEDIA / f"pan_{name}.jpg")], check=True)
 
@@ -164,7 +164,7 @@ def main():
         },
         "n3v": {
             "ours": {"psnr": round(n3v["psnr"], 2), "dssim1": n3v["Dssim1"], "dssim2": n3v["Dssim2"], "lpips": n3v["lpips"]},
-            # 论文（4C4D, CVPR 2026）N3V flame_steak 的数字，DSSIM2 由 Joey 提供
+            # Numbers from the paper (4C4D, CVPR 2026) for N3V flame_steak; DSSIM2 provided by Joey
             "paper": {"psnr": 23.72, "dssim1": 0.075, "dssim2": 0.046, "lpips": 0.114},
         },
         "workbench": {
@@ -175,10 +175,10 @@ def main():
         },
     }
     text = json.dumps(data, indent=1)
-    # 安全自查：只允许数字、文件名和固定英文；出现路径、IP、ID 就停下
+    # Safety self-check: only numbers, file names and fixed English allowed; stop if a path, IP or ID shows up
     bad = re.findall(r"/(?:home|opt|workspace|root)\b|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|atlas", text)
     if bad:
-        raise SystemExit(f"showcase.json 含不该出现的内容：{bad}")
+        raise SystemExit(f"showcase.json contains disallowed content: {bad}")
     (OUT / "showcase.json").write_text(text)
     for name, v in videos.items():
         print(f"{name:18s} {v['w']}x{v['h']} {v['seconds']:5.1f}s {v['mb']:5.2f} MB")

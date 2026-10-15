@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""直接用训练好的 4C4D 模型渲染，不加载训练数据集。在 4c4d 环境里、4C4D 仓库目录下运行。
+"""Render directly from a trained 4C4D model without loading the training dataset. Run in the 4c4d env from the 4C4D repo dir.
 
-两个子命令：
-  export  导出前端用的场景预览：点云（从高斯中心采样）、全部机位的相机参数、每个机位 t=0 的缩略图
-  render  按轨迹逐帧渲染（轨迹由服务器算好：每帧的 w2c、焦距、画面尺寸、时间戳）
+Two subcommands:
+  export  export the scene preview for the frontend: point cloud (sampled from Gaussian centres), all camera parameters, a t=0 thumbnail per camera
+  render  render frame by frame along a trajectory (computed by the server: per-frame w2c, focal length, image size, timestamp)
 
-渲染调用与官方 render.py 相同：render(相机, 高斯, pipe, 背景色)，不做训练时的透明度衰减。
-相机对象只提供渲染函数用到的属性（视场角、位姿、投影、相机中心、画面尺寸、时间戳），主点居中。
+Rendering calls are the same as the official render.py: render(camera, gaussians, pipe, background), without the training-time opacity decay.
+The camera object provides only the attributes the renderer uses (FoV, pose, projection, camera centre, image size, timestamp), principal point centred.
 """
 import argparse
 import json
@@ -59,7 +59,7 @@ def save_rgb(t, path, quality=90):
 
 
 def read_colmap(sparse):
-    """读 COLMAP 二进制 cameras.bin / images.bin，返回 {名字: {w2c, fx, fy, cx, cy, W, H}}。"""
+    """Read COLMAP binary cameras.bin / images.bin; return {name: {w2c, fx, fy, cx, cy, W, H}}."""
     cams = {}
     with open(sparse / "cameras.bin", "rb") as f:
         for _ in range(struct.unpack("<Q", f.read(8))[0]):
@@ -96,7 +96,7 @@ def cmd_export(a):
     (out / "thumbs").mkdir(parents=True, exist_ok=True)
     g, pipe, bg, it = load_model(a.config, a.checkpoint)
     cams = read_colmap(Path(a.sparse))
-    # 点云：高斯中心 + 球谐 0 阶颜色，按不透明度过滤后随机采样
+    # Point cloud: Gaussian centres + degree-0 SH colour, filtered by opacity, then randomly sampled
     with torch.no_grad():
         xyz = g.get_xyz.detach().cpu().numpy()
         op = g.get_opacity.detach().cpu().numpy().reshape(-1)
@@ -111,7 +111,7 @@ def cmd_export(a):
         f.write(struct.pack("<I", len(pts)))
         f.write(pts.tobytes())
         f.write(col.tobytes())
-    # 每个机位 t=0 的缩略图（从模型渲染，宽 480）
+    # A t=0 thumbnail per camera (rendered from the model, 480 wide)
     with torch.no_grad():
         for name, c in cams.items():
             s = 480 / c["width"]
@@ -120,7 +120,7 @@ def cmd_export(a):
     meta = {"cameras": cams, "num_points": int(len(pts)), "num_gaussians": int(len(xyz)), "iteration": it,
             "time_duration": [0.0, 10.0]}
     json.dump(meta, open(out / "scene.json", "w"), indent=1)
-    print(f"[export] {len(cams)} 个机位，点云 {len(pts)} / {len(xyz)} 个高斯", flush=True)
+    print(f"[export] {len(cams)} cameras, point cloud {len(pts)} / {len(xyz)} Gaussians", flush=True)
 
 
 def cmd_render(a):
@@ -143,7 +143,7 @@ def cmd_render(a):
                "fps_render": round(len(frames) / max(time.time() - t1, 1e-6), 1), "iteration": it,
                "peak_vram_gib": round(torch.cuda.max_memory_allocated() / 2 ** 30, 2)},
               open(out.parent / "render_stats.json", "w"), indent=1)
-    print(f"[render] {len(frames)} 帧，加载 {load_s:.1f}s，渲染 {time.time() - t1:.1f}s", flush=True)
+    print(f"[render] {len(frames)} frames, load {load_s:.1f}s, render {time.time() - t1:.1f}s", flush=True)
 
 
 def main():

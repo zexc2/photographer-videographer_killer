@@ -1,6 +1,6 @@
-// 运镜工作台的界面文字（英文默认，可切换中文）。
-// 静态文字：HTML 元素加 data-i18n="键"（textContent）、data-i18n-title、data-i18n-aria。
-// 后端只返回 code + 参数：错误用 err.<code>，任务进度用 stage.<code>，任务失败原因用 jobErr.<code>。
+// UI strings for the camera path workbench (English by default, switchable to Chinese).
+// Static text: HTML elements carry data-i18n="key" (textContent), data-i18n-title, data-i18n-aria.
+// The backend returns only code + params: errors use err.<code>, job progress stage.<code>, job failure reasons jobErr.<code>.
 "use strict";
 
 const I18N = {
@@ -185,7 +185,7 @@ const I18N = {
 
 const LANG_KEY = "atlas.lang";
 let LANG = "en";
-try { const v = localStorage.getItem(LANG_KEY); if (v === "en" || v === "zh") LANG = v; } catch { /* 读不到就用英文 */ }
+try { const v = localStorage.getItem(LANG_KEY); if (v === "en" || v === "zh") LANG = v; } catch { /* unreadable: fall back to English */ }
 
 function t(key, params = {}) {
   let s = I18N[LANG][key] ?? I18N.en[key] ?? key;
@@ -195,7 +195,7 @@ function t(key, params = {}) {
   });
 }
 
-// 后端错误：{code, params} → 当前语言的一句话
+// Backend error: {code, params} → one sentence in the current language
 function tErr(e) {
   const code = e?.code || "unknown";
   return I18N.en["err." + code] ? t("err." + code, e.params || {}) : t("err.unknown", { code });
@@ -217,7 +217,7 @@ function applyStatic() {
 function setLang(lang, onChange) {
   if (lang !== "en" && lang !== "zh") return;
   LANG = lang;
-  try { localStorage.setItem(LANG_KEY, lang); } catch { /* 存不了也照常切换 */ }
+  try { localStorage.setItem(LANG_KEY, lang); } catch { /* cannot store: switch anyway */ }
   applyStatic();
   onChange?.();
 }

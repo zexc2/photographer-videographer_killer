@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# GEN3C（https://github.com/nv-tlabs/GEN3C）环境 + 权重。幂等，可重复运行。
+# GEN3C (https://github.com/nv-tlabs/GEN3C) env + weights. Idempotent; safe to re-run.
 #
-# 环境：官方 cosmos-predict1.yaml（Python 3.10、torch 2.6、conda 内置 CUDA 12.4 toolkit）
-#       + transformer-engine 1.12 + apex（编译）+ MoGe。和基础镜像的 torch 2.9 / CUDA 12.8 无关，完全自带。
-#       装好后 conda-pack 到 $ATLAS_VOL/envpacks/，下次开机直接解压（方案 C）。
-# 权重：nvidia/GEN3C-Cosmos-7B、nvidia/Cosmos-Tokenize1-CV8x8x8-720p、google-t5/t5-11b（跳过用不到的
-#       TensorFlow / Flax 权重，约 76 GB，官方脚本会下载约 121 GB）→ $ATLAS_VOL/weights/gen3c/checkpoints
-# 许可：代码 Apache-2.0；GEN3C / Cosmos 权重 NVIDIA Open Model License；T5 Apache-2.0。
-#       三个 HF 仓库都不是 gated，不需要点同意；HF token 可选（有的话下载限速更宽松）。
+# Env: official cosmos-predict1.yaml (Python 3.10, torch 2.6, conda-provided CUDA 12.4 toolkit)
+#       + transformer-engine 1.12 + apex (built) + MoGe. Fully self-contained, independent of the base image's torch 2.9 / CUDA 12.8.
+#       After install it is conda-packed to $ATLAS_VOL/envpacks/ and unpacked on the next boot (option C).
+# Weights: nvidia/GEN3C-Cosmos-7B, nvidia/Cosmos-Tokenize1-CV8x8x8-720p, google-t5/t5-11b (skipping the unused
+#       TensorFlow / Flax weights: about 76 GB vs about 121 GB with the official script) -> $ATLAS_VOL/weights/gen3c/checkpoints
+# License: code Apache-2.0; GEN3C / Cosmos weights NVIDIA Open Model License; T5 Apache-2.0.
+#       None of the three HF repos is gated, so nothing to accept; an HF token is optional (it gives looser download rate limits).
 source "$(dirname "$(readlink -f "$0")")/lib/common.sh"
 NAME=gen3c
-GEN3C_REF=${GEN3C_REF:-db2ffe1}       # 2026-06-15 main，核实过 INSTALL.md
+GEN3C_REF=${GEN3C_REF:-db2ffe1}       # 2026-06-15 main, INSTALL.md verified
 TE_VERSION=1.12.0
-# apex 固定到 25.09（实测 2026-10-14）：
-#   - master（2025-11 起）用了 torch 2.6 不支持的 list[int] 注解（custom_op）→ import megatron.core 失败
-#   - 24.10（官方 Docker 基础镜像的版本）还在用 .type()，和 torch 2.6 头文件不兼容 → 编译失败
-#   - 25.09 两个问题都没有：List[int] + .scalar_type()
+# apex pinned to 25.09 (tested 2026-10-14):
+#   - master (since 2025-11) uses list[int] annotations (custom_op) unsupported by torch 2.6 -> import megatron.core fails
+#   - 24.10 (the official Docker base image's version) still uses .type(), incompatible with torch 2.6 headers -> build fails
+#   - 25.09 has neither problem: List[int] + .scalar_type()
 APEX_REF=25.09
 START=$SECONDS
 busy_start
@@ -23,6 +23,9 @@ apt_ensure git curl rsync zstd build-essential
 
 SRC=$ATLAS_SRC/GEN3C
 GEN3C_SHA=$(repo_ensure https://github.com/nv-tlabs/GEN3C.git GEN3C "$GEN3C_REF")
+# Environment pack revision (= the content hash before the 2026-10-15 translation, so existing packs still match).
+# Bump it (any new 12-hex value) whenever this script changes what gets installed.
+ENV_REV=273108751c00
 KEY=$(env_key "$(readlink -f "$0")")
 P=$ATLAS_ENVS/$NAME
 
@@ -32,7 +35,7 @@ else
   MODE=installed
   conda_ensure
   rm -rf "$P"
-  log "创建 conda 环境（cosmos-predict1.yaml）"
+  log "Creating conda env (cosmos-predict1.yaml)"
   "$CONDA_ROOT/bin/mamba" env create -q -p "$P" -f "$SRC/cosmos-predict1.yaml" >/dev/null
   (
     export PATH=$P/bin:$PATH CUDA_HOME=$P
@@ -40,39 +43,39 @@ else
     cd "$SRC"
     log "pip install -r requirements.txt"
     $PIP install -q -r requirements.txt
-    # 官方用 ln -sf 把头文件软链到 $CONDA_PREFIX/include；conda-pack 对绝对路径软链不友好，这里改成复制
+    # Upstream symlinks the headers into $CONDA_PREFIX/include with ln -sf; conda-pack handles absolute symlinks poorly, so copy instead
     site=$P/lib/python3.10/site-packages
     for d in "$site"/nvidia/*/include "$site"/triton/backends/nvidia/include; do
       [ -d "$d" ] || continue
       cp -rf "$d"/. "$P/include/"
       cp -rf "$d"/. "$P/include/python3.10/"
     done
-    log "编译 transformer-engine $TE_VERSION（较慢）"
+    log "Building transformer-engine $TE_VERSION (slow)"
     $PIP install -q "transformer-engine[pytorch]==$TE_VERSION"
-    log "编译 apex（较慢）"
+    log "Building apex (slow)"
     repo_ensure https://github.com/NVIDIA/apex.git apex "$APEX_REF" > "$P/.apex_commit"
     $PIP install -q --disable-pip-version-check --no-cache-dir --no-build-isolation \
       --config-settings "--build-option=--cpp_ext" --config-settings "--build-option=--cuda_ext" "$ATLAS_SRC/apex"
     $PIP install -q git+https://github.com/microsoft/MoGe.git
-    # MoGe 会把 huggingface-hub 升到 2.x，破坏 transformers 4.49（实测 2026-10-13）→ 再按官方 requirements 恢复所有固定版本
+    # MoGe upgrades huggingface-hub to 2.x, which breaks transformers 4.49 (seen 2026-10-13) -> reinstall official requirements to restore all pins
     $PIP install -q -r requirements.txt
-    log "官方环境自检 scripts/test_environment.py"
-    # 官方自检脚本遇到导入失败也返回 0，所以检查输出里有没有 [ERROR]，避免把坏环境打包
+    log "Official env self-check scripts/test_environment.py"
+    # The official self-check returns 0 even when imports fail, so look for [ERROR] in its output to avoid packing a broken env
     PYTHONPATH=$SRC python scripts/test_environment.py 2>&1 | tee "$ATLAS_LOGS/gen3c-envtest.log"
-    if grep -q 'ERROR' "$ATLAS_LOGS/gen3c-envtest.log"; then echo "GEN3C 环境自检失败" >&2; exit 1; fi
-    # MoGe 3.x 要求 numpy>=2，和 GEN3C 固定的 numpy 1.26 冲突；MoGe 只用于单张图片模式，我们走视频 + ViPE，所以不在必检列表里
+    if grep -q 'ERROR' "$ATLAS_LOGS/gen3c-envtest.log"; then echo "GEN3C env self-check failed" >&2; exit 1; fi
+    # MoGe 3.x needs numpy>=2, conflicting with GEN3C's pinned numpy 1.26; MoGe is only for single-image mode and we use video + ViPE, so it's not in the required-imports check
     python -c "import transformers, megatron.core, transformer_engine, apex; print('gen3c imports ok')"
   )
   env_pack "$NAME" "$KEY"
 fi
 
-# ---------------------------------------------------------------- 权重
+# ---------------------------------------------------------------- weights
 if weights_ready "$NAME"; then
-  log "GEN3C 权重已在 Global volume"
+  log "GEN3C weights already on Global volume"
 else
-  hf_token_load || log "没有 HF token（这几个仓库不需要，继续）"
+  hf_token_load || log "No HF token (not needed for these repos, continuing)"
   TMP=$ATLAS_CACHE/gen3c_ckpt
-  log "下载权重到容器盘 $TMP（约 76 GB），完成后拷到 Global volume"
+  log "Downloading weights to container disk $TMP (about 76 GB), then copying to Global volume"
   "$P/bin/python" - "$TMP" <<'PY'
 import sys
 from huggingface_hub import snapshot_download
@@ -88,7 +91,7 @@ PY
   weights_mark "$NAME"
   rm -rf "$TMP"
 fi
-# 代码目录里的 checkpoints 指向 Global volume（推理时只读，符合对象存储的使用方式）
+# checkpoints in the code dir points to Global volume (read-only during inference, which suits object storage)
 ln -sfn "$ATLAS_WEIGHTS/$NAME/checkpoints" "$SRC/checkpoints"
 
 report "$NAME" "$MODE" "$START" "GEN3C $GEN3C_SHA"

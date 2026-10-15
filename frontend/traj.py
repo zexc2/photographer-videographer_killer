@@ -1,12 +1,12 @@
-"""运镜轨迹：关键帧 → 每一帧的相机位姿（OpenCV / COLMAP 约定：x 右、y 下、z 前，w2c 为世界→相机）。
+"""Camera path: keyframes → per-frame camera poses (OpenCV / COLMAP convention: x right, y down, z forward; w2c is world→camera).
 
-关键帧都以一个"固定机位"（基准相机）为参照，单位是"机位间距"（相邻真实机位之间的平均距离），
-这样不同场景的数值含义一致：
-  right / up / forward   相对基准相机的平移（机位间距），up 为正表示向上
-  yaw / pitch            相对基准相机朝向的转角（度）；yaw 为正向右转，pitch 为正向上抬
-  fov                    垂直视场角（度）
-  t                      该关键帧在输出视频中的时间（秒）
-  src                    该关键帧对应源视频的时间（秒）
+All keyframes are relative to one fixed camera (the base camera), in units of "camera spacing" (the mean distance
+between neighbouring real cameras), so values mean the same thing across scenes:
+  right / up / forward   translation relative to the base camera (camera spacings); positive up means upward
+  yaw / pitch            rotation relative to the base camera orientation (degrees); positive yaw turns right, positive pitch tilts up
+  fov                    vertical field of view (degrees)
+  t                      time of this keyframe in the output video (seconds)
+  src                    corresponding time in the source video (seconds)
 """
 import math
 
@@ -60,7 +60,7 @@ def slerp(q0, q1, u):
 
 
 def camera_spacing(cameras):
-    """相邻真实机位之间的平均距离（每个机位到最近另一机位的距离的中位数）。"""
+    """Mean distance between neighbouring real cameras (median of each camera's distance to its nearest other camera)."""
     C = np.array([camera_center(c["w2c"]) for c in cameras.values()])
     d = np.linalg.norm(C[:, None] - C[None], axis=-1)
     np.fill_diagonal(d, np.inf)
@@ -73,13 +73,13 @@ def camera_center(w2c):
 
 
 def keyframe_c2w(base_w2c, kf, spacing):
-    """关键帧 → c2w（OpenCV 约定）。平移和转角都在基准相机自己的坐标系里。"""
+    """Keyframe → c2w (OpenCV convention). Translation and rotation are in the base camera's own frame."""
     base = np.asarray(base_w2c, dtype=float)
-    Rb = base[:3, :3].T                      # 基准相机 c2w 旋转
+    Rb = base[:3, :3].T                      # base camera c2w rotation
     C = camera_center(base)
-    # 相机坐标系：x 右、y 下、z 前，所以"向上"是 -y
+    # Camera frame: x right, y down, z forward, so "up" is -y
     offset = np.array([kf.get("right", 0.0), -kf.get("up", 0.0), kf.get("forward", 0.0)]) * spacing
-    # 先偏航（绕相机 y 轴，正角度把前向 z 转向右 +x）再俯仰（绕相机 x 轴，正角度把前向 z 转向上 -y）
+    # Yaw first (about camera y; positive turns forward z toward right +x), then pitch (about camera x; positive turns forward z toward up -y)
     R_rel = _rot_y(math.radians(kf.get("yaw", 0.0))) @ _rot_x(math.radians(kf.get("pitch", 0.0)))
     c2w = np.eye(4)
     c2w[:3, :3] = Rb @ R_rel
@@ -93,14 +93,14 @@ def _catmull_rom(p0, p1, p2, p3, u):
 
 
 def build_trajectory(scene, spec):
-    """spec: {base_cam, keyframes: [...], duration, fps, width, height}；scene: export_scene 导出的 scene.json。
-    返回给 pod 渲染用的 {width, height, fps, frames: [{w2c, fx, fy, timestamp}], ...}。"""
+    """spec: {base_cam, keyframes: [...], duration, fps, width, height}; scene: the scene.json written by export_scene.
+    Returns {width, height, fps, frames: [{w2c, fx, fy, timestamp}], ...} for rendering on the pod."""
     cams = scene["cameras"]
     base = cams[spec["base_cam"]]
     spacing = camera_spacing(cams)
     kfs = sorted(spec["keyframes"], key=lambda k: k["t"])
     if not kfs:
-        raise ValueError("no keyframes")   # app.py 已先检查，正常走不到这里
+        raise ValueError("no keyframes")   # app.py checks this first; normally unreachable
     duration = float(spec["duration"])
     fps = int(spec.get("fps", 30))
     W, H = int(spec["width"]), int(spec["height"])
@@ -110,7 +110,7 @@ def build_trajectory(scene, spec):
     P = [p[:3, 3] for p in poses]
     Q = [quat_from_R(p[:3, :3]) for p in poses]
     ts = [float(k["t"]) for k in kfs]
-    # 帧时间均匀覆盖 [0, duration]，保证最后一帧正好落在终点关键帧
+    # Frame times evenly cover [0, duration] so the last frame lands exactly on the final keyframe
     n = max(2, int(round(duration * fps)))
     frames = []
     for i in range(n):
@@ -125,7 +125,7 @@ def build_trajectory(scene, spec):
         if len(kfs) == 1:
             pos, q, k0, k1, uu = P[0], Q[0], kfs[0], kfs[0], 0.0
         else:
-            uu = u * u * (3 - 2 * u) if spec.get("ease", True) else u   # 每段两端缓入缓出
+            uu = u * u * (3 - 2 * u) if spec.get("ease", True) else u   # ease in/out at both ends of each segment
             pos = _catmull_rom(P[max(j - 1, 0)], P[j], P[j + 1], P[min(j + 2, len(P) - 1)], uu)
             q = slerp(Q[j], Q[j + 1], uu)
             k0, k1 = kfs[j], kfs[j + 1]

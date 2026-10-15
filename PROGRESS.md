@@ -1,419 +1,419 @@
-# 进度记录
+# Progress Log
 
-每个阶段记录：做了什么 / 遇到的问题 / 耗时 / 花费。
+Each stage records: what was done / problems encountered / time spent / cost.
 
-| 阶段 | 日期 | 耗时 | GPU 花费 |
+| Stage | Date | Time | GPU cost |
 |---|---|---|---|
-| 0 仓库初始化 | 2026-10-13 | ~10 分钟 | $0 |
-| 1 GPU 护栏 | 2026-10-13 | ~30 分钟 | $0 |
-| 1.1 改用 Global volume | 2026-10-13 | ~45 分钟 | $0 |
-| 2 pod 环境脚本 | 2026-10-13 | ~1 小时 | $0（尚未开 pod） |
-| 2.2 第一次开 pod：安装三套环境 | 2026-10-14 | pod 2h03m | **$3.97** |
-| 3 Panoptic 数据脚本 | 2026-10-14 | ~1 小时 | $0（尚未开 pod） |
-| 3.1 开 pod 准备 Panoptic 数据 | 2026-10-14 | pod 1h39m | **$3.02** |
-| 4.1 开 pod 跑基线 | 2026-10-14 | pod 3h50m | **$7.05** |
-| 4.2 取回结果 | 2026-10-14 | pod 1 分钟 | $0.05 |
-| 4.3 重跑 4C4D | 2026-10-15 | pod 2h41m | **$4.77** |
-| 4.4 N3V 官方复现 | 2026-10-15 | pod 3h45m | **$7.30** |
-| 5.1 运镜工作台真实 GPU 测试 | 2026-10-15 | pod 共约 5 分钟 | $0.12 |
+| 0 Repository setup | 2026-10-13 | ~10 min | $0 |
+| 1 GPU guard | 2026-10-13 | ~30 min | $0 |
+| 1.1 Switch to Global volume | 2026-10-13 | ~45 min | $0 |
+| 2 Pod environment scripts | 2026-10-13 | ~1 h | $0 (no pod started yet) |
+| 2.2 First pod: install the three environments | 2026-10-14 | pod 2h03m | **$3.97** |
+| 3 Panoptic data scripts | 2026-10-14 | ~1 h | $0 (no pod started yet) |
+| 3.1 Pod run: prepare Panoptic data | 2026-10-14 | pod 1h39m | **$3.02** |
+| 4.1 Pod run: baselines | 2026-10-14 | pod 3h50m | **$7.05** |
+| 4.2 Retrieve results | 2026-10-14 | pod 1 min | $0.05 |
+| 4.3 Rerun 4C4D | 2026-10-15 | pod 2h41m | **$4.77** |
+| 4.4 Official N3V reproduction | 2026-10-15 | pod 3h45m | **$7.30** |
+| 5.1 Real GPU test of the camera-path workbench | 2026-10-15 | pod ~5 min total | $0.12 |
 
 ---
 
-## 阶段 0：仓库初始化（2026-10-13）
+## Stage 0: Repository setup (2026-10-13)
 
-**做了什么**
-- 保存项目简报为 `CLAUDE.md`
-- `~/app` 初始化 git（main 分支），先写 `.gitignore`（屏蔽密钥、权重、数据集、视频、点云、日志等）再做第一次提交
-- 建立 `README.md` 骨架（背景、阶段规划、架构、第三方许可表）与本文件
+**What was done**
+- Saved the project brief as `CLAUDE.md`
+- Initialized git in `~/app` (main branch); wrote `.gitignore` first (excluding keys, weights, datasets, videos, point clouds, logs, etc.), then made the first commit
+- Created the `README.md` skeleton (background, stage plan, architecture, third-party license table) and this file
 
-**遇到的问题**
-- 无
+**Problems encountered**
+- None
 
-**耗时**：约 10 分钟
-**花费**：$0（未使用 GPU）
-
----
-
-## 阶段 1：GPU 护栏（2026-10-13）
-
-**做了什么**
-- `guard/atlas_gpu.py`，以 `~/bin/gpu-up`、`gpu-down`、`gpu-status`、`gpu-guard` 的形式安装：
-  - 白名单只有 A100 80GB，A100 全部无货时才允许 H100；名字强制 atlas- 前缀；最多同时 1 个；挂载 `atlas_data` 到 `/workspace`；`--hours` 默认 6、最大 6
-  - 只能操作 atlas- 前缀的 pod，别的项目的 pod 一律拒绝
-- 巡检：atlas 用户的 crontab 每 10 分钟执行一次（用 `flock` 防重入）。超时 → stop；GPU 连续 30 分钟利用率为 0 → stop；日志写到 `~/logs/gpu-guard.log`
-- 空闲检测选了 SSH + nvidia-smi，没有用 RunPod API。理由见 [guard/README.md](guard/README.md)
-- 离线测试 `guard/tests/run_tests.sh`：用假的 runpodctl / ssh 跑 39 个用例，全部通过。在真实账号上做了只读的 dry-run，没有开 pod
-
-**Network Volume 建议**（已作废，见阶段 1.1）
-- 区域选 **US-KS-2**：这是唯一同时列出 A100 SXM、A100 PCIe、H100（SXM / PCIe / NVL）的数据中心，A100 没货时回退到 H100 的空间最大。备选 US-MO-1
-- 大小建议 **200 GB**，约 $14/月（按 $0.07/GB/月）。估算：GEN3C 权重和依赖模型 60–80 GB，三套 conda 环境约 35 GB，MASt3R 和 ViPE 权重约 5 GB，Panoptic 的 1–2 个序列（只下载选中的机位）10–20 GB，训练产出约 20 GB。以后可以扩容，但不能缩小
-
-**遇到的问题**
-- runpodctl 2.15 不提供 GPU 利用率字段，所以空闲检测改用 SSH
-- `runpodctl ssh info` 的输出格式和 pod 的部分字段要等有了真实 pod 才能确认，第一次开 pod 时验证
-
-**耗时**：约 30 分钟
-**花费**：$0（只做了只读查询和 dry-run）
+**Time**: about 10 minutes
+**Cost**: $0 (no GPU used)
 
 ---
 
-## 阶段 1.1：改用 Global volume（2026-10-13）
+## Stage 1: GPU guard (2026-10-13)
 
-**决定（Joey）**：不用 US-KS-2 的 Network volume，改用 Global volume `atlas_data`。原因是 pod 停掉后同机房经常没货，而 Global volume 不绑机房。
+**What was done**
+- `guard/atlas_gpu.py`, installed as `~/bin/gpu-up`, `gpu-down`, `gpu-status`, `gpu-guard`:
+  - Whitelist is A100 80GB only; H100 is allowed only when all A100s are out of stock; names must have the atlas- prefix; at most 1 pod at a time; mounts `atlas_data` at `/workspace`; `--hours` defaults to 6, max 6
+  - Can only act on atlas- prefixed pods; pods from other projects are always refused
+- Watchdog: the atlas user's crontab runs it every 10 minutes (with `flock` to prevent overlapping runs). Over time limit → stop; GPU utilization at 0 for 30 consecutive minutes → stop; logs go to `~/logs/gpu-guard.log`
+- Idle detection uses SSH + nvidia-smi instead of the RunPod API. Rationale in [guard/README.md](guard/README.md)
+- Offline tests `guard/tests/run_tests.sh`: 39 cases using fake runpodctl / ssh, all passing. Ran a read-only dry-run against the real account; no pod was started
 
-**做了什么**
-- 核实了官方文档（Global volume 还是 beta）：
-  - 底层是对象存储，没有文件锁和原子 rename，最终一致
-  - 默认挂在 `/workspace`，同时挂 network volume 时变成 `/workspace-global`
-  - **只有 REST API v2 能挂载**，runpodctl 2.15 不支持
-  - 账户余额归零 15 天后 volume 会被删除
-- 护栏改成以 RunPod API v2 为主，runpodctl 作为兜底：
-  - `gpu-up` 不再锁区域，在所有区域找 A100（都没货或都开不出来才用 H100），挂载 Global volume，路径统一用变量 `$ATLAS_VOL`
-  - 容器盘默认 200 GB（`$ATLAS_LOCAL=/opt/atlas`），`.atlas_busy` 标记移到容器盘
-  - 巡检的空闲检测改为 API 利用率为主、SSH 复核；stop 前先执行 `pre_stop`，把结果同步回 Global volume
-  - API 故障时，巡检退回 runpodctl，照样按时长 stop
-  - 新增服务器专用的 pod SSH key，通过 `PUBLIC_KEY` 注入 pod
-- 存储分层和 conda 环境方案对比（A Docker 镜像 / B 每次安装 / C 装一次后 conda-pack 打包）写在 [docs/storage-and-env.md](docs/storage-and-env.md)，**采用 C**
-- 测试扩充到 50 个用例，全部通过；修了一个 bug：`--gpu h100` 时原来没有检查 A100 的库存
+**Network Volume recommendation** (obsolete, see Stage 1.1)
+- Region: **US-KS-2**: the only data center listing A100 SXM, A100 PCIe and H100 (SXM / PCIe / NVL) together, giving the most room to fall back to H100 when A100s are out of stock. Alternative: US-MO-1
+- Recommended size **200 GB**, about $14/month (at $0.07/GB/month). Estimate: GEN3C weights and dependent models 60–80 GB, three conda environments about 35 GB, MASt3R and ViPE weights about 5 GB, 1–2 Panoptic sequences (selected cameras only) 10–20 GB, training outputs about 20 GB. It can be expanded later but not shrunk
 
-**遇到的问题**
-- runpodctl 不支持 Global volume，需要 Joey 另建一个限权 API key（见 guard/README.md）
+**Problems encountered**
+- runpodctl 2.15 does not expose a GPU utilization field, so idle detection uses SSH instead
+- The output format of `runpodctl ssh info` and some pod fields can only be confirmed with a real pod; to be verified on the first pod run
 
-**耗时**：约 45 分钟
-**花费**：$0
+**Time**: about 30 minutes
+**Cost**: $0 (read-only queries and dry-runs only)
 
 ---
 
-## 阶段 2：pod 环境脚本（2026-10-13）
+## Stage 1.1: Switch to Global volume (2026-10-13)
 
-**做了什么**
-- 核实了三个官方仓库，固定到具体 commit：GEN3C `db2ffe1`、ViPE `8c9f361`、4C4D `ed6a3cb`（确认是 CVPR 2026 论文作者本人的仓库）、MASt3R `f5209af`
-- `pod/setup_gen3c.sh`、`setup_vipe.sh`、`setup_4c4d.sh`：幂等，按方案 C 工作（装一次 → conda-pack 打包到 Global volume → 以后开机解压）。每次运行都记录耗时、环境大小、权重大小
-- `runner/atlas_run.py`（`atlas-run`）：服务器把脚本和任务输入 rsync 到 pod → 后台执行 → 轮询进度 → 只把小文件（≤20 MB 的预览、指标）拉回服务器，并算出本次 GPU 花费。HF token 只通过 SSH stdin 传
-- `pod/run_task.sh`：busy 心跳、峰值显存采样、结束时把 `out/` 同步回 Global volume；`pre_stop.sh`：被巡检 stop 前抢救未完成任务的结果
-- `tasks/selftest.sh`：第一次开 pod 时实测 Global volume 的读写速度，方案 C 的时间估算要靠这个数据验证
-- 本机测试 `runner/tests/run_tests.sh`：20 个用例全部通过（执行器全流程、同步、拉回大小限制、失败任务、pre_stop、环境打包和恢复）；护栏测试 50 个，仍然全部通过
+**Decision (Joey)**: Use the Global volume `atlas_data` instead of a Network volume in US-KS-2. Reason: after a pod is stopped, the same data center is often out of stock, while a Global volume is not tied to a data center.
 
-**技术选择**
-- 4C4D 环境：官方 py3.7 / torch 1.12 / CUDA 11.6 不支持 H100 → 升级到 py3.10 / torch 2.4 / CUDA 12.4，重新编译 4 个 CUDA 扩展（采用）；出问题时退回官方环境（只能用 A100）
-- MASt3R 预处理：官方走 MAtCha（editable 安装加写死的 CUDA 11.8 路径，没法打包）→ 直接装 naver/mast3r，阶段 3 自己写"已知位姿 → 点云"脚本（采用）
+**What was done**
+- Checked the official docs (Global volume is still in beta):
+  - Backed by object storage: no file locks, no atomic rename, eventually consistent
+  - Mounted at `/workspace` by default; becomes `/workspace-global` when a network volume is also mounted
+  - **Can only be mounted via REST API v2**; runpodctl 2.15 does not support it
+  - The volume is deleted 15 days after the account balance reaches zero
+- Guard reworked to use RunPod API v2 as primary, with runpodctl as fallback:
+  - `gpu-up` no longer locks a region; it searches all regions for A100 (H100 only if none are in stock or none can be started), mounts the Global volume, and always refers to its path via the `$ATLAS_VOL` variable
+  - Container disk defaults to 200 GB (`$ATLAS_LOCAL=/opt/atlas`); the `.atlas_busy` marker moved to the container disk
+  - Watchdog idle detection now uses API utilization as primary with SSH as a cross-check; before stopping it runs `pre_stop` to sync results back to the Global volume
+  - If the API fails, the watchdog falls back to runpodctl and still stops pods on the time limit
+  - Added a server-only pod SSH key, injected into pods via `PUBLIC_KEY`
+- Storage tiering and comparison of conda environment options (A Docker image / B install every time / C install once then conda-pack) written up in [docs/storage-and-env.md](docs/storage-and-env.md); **chose C**
+- Tests expanded to 50 cases, all passing; fixed a bug: `--gpu h100` previously did not check A100 stock
 
-**遇到的问题和发现**
-- GEN3C 官方权重脚本会下载约 121 GB，其中 45 GB 是用不到的 T5 TF 权重 → 改为只下载需要的约 76 GB
-- **GEN3C 和 4C4D 的命令行都只有预设运镜**，阶段 5 的自定义关键帧需要改代码（两边都可以改，4C4D 更简单）
-- **许可**：4C4D 和 MASt3R 都是非商业许可；GEN3C 权重允许商用，但模型卡写明"关闭安全护栏会终止许可"，而官方推理脚本强制关闭了护栏。第一阶段是研究验证，不影响；商用前必须解决
-- 所有 setup 脚本都还没有在真实 pod 上验证
+**Problems encountered**
+- runpodctl does not support Global volumes, so Joey needs to create a separate restricted API key (see guard/README.md)
 
-**耗时**：约 1 小时
-**花费**：$0
-
----
-
-## 阶段 2.1：volume ID 与余额检查（2026-10-13）
-
-- Global volume 改为只按配置里的 ID 识别。名字含斜杠，只用于显示；同名的其他 volume 不会被误用（有测试覆盖）
-- gpu-up 开 pod 前检查余额：< $15 或读不到就拒绝；跑满时长后会低于 $15 时给出提醒；gpu-status 显示余额
-- 护栏测试 61 个、执行器测试 20 个，全部通过
-- 真实账号 dry-run：两种 A100 都有货（SXM $1.79/h，3 个区域；PCIe 2 个区域）。**但服务器上没有找到 API key 文件，余额也仍是 $7.07**，所以 v2 API 这条路还没验证，见汇报
-
-**花费**：$0
+**Time**: about 45 minutes
+**Cost**: $0
 
 ---
 
-## 阶段 2.2：第一次开 pod，安装并打包三套环境（2026-10-13 23:25 – 2026-10-14 01:27 UTC）
+## Stage 2: Pod environment scripts (2026-10-13)
 
-**结果**：全部成功，pod 已 stop。Global volume 上现在有：
+**What was done**
+- Verified the three official repositories and pinned specific commits: GEN3C `db2ffe1`, ViPE `8c9f361`, 4C4D `ed6a3cb` (confirmed to be the CVPR 2026 paper authors' own repository), MASt3R `f5209af`
+- `pod/setup_gen3c.sh`, `setup_vipe.sh`, `setup_4c4d.sh`: idempotent, following option C (install once → conda-pack into the Global volume → unpack on later boots). Each run records time, environment size and weight size
+- `runner/atlas_run.py` (`atlas-run`): the server rsyncs scripts and task inputs to the pod → runs in the background → polls progress → pulls back only small files (previews ≤20 MB, metrics) to the server, and computes the GPU cost of the run. The HF token is passed only via SSH stdin
+- `pod/run_task.sh`: busy heartbeat, peak VRAM sampling, syncs `out/` back to the Global volume at the end; `pre_stop.sh`: rescues results of unfinished tasks before the watchdog stops the pod
+- `tasks/selftest.sh`: measures Global volume read/write speed on the first pod run; the time estimates for option C depend on this data
+- Local tests `runner/tests/run_tests.sh`: all 20 cases pass (full runner flow, sync, pull-back size limit, failed tasks, pre_stop, environment pack and restore); the 50 guard tests still all pass
 
-| 内容 | 大小 |
+**Technical choices**
+- 4C4D environment: the official py3.7 / torch 1.12 / CUDA 11.6 does not support H100 → upgraded to py3.10 / torch 2.4 / CUDA 12.4 and recompiled 4 CUDA extensions (adopted); fall back to the official environment if problems arise (A100 only)
+- MASt3R preprocessing: the official route goes through MAtCha (editable install plus a hard-coded CUDA 11.8 path, cannot be packed) → install naver/mast3r directly and write our own "known poses → point cloud" script in Stage 3 (adopted)
+
+**Problems and findings**
+- The official GEN3C weight script downloads about 121 GB, of which 45 GB is unused T5 TF weights → changed to download only the ~76 GB actually needed
+- **Both GEN3C and 4C4D command lines only offer preset camera paths**; Stage 5's custom keyframes require code changes (both can be modified; 4C4D is simpler)
+- **Licenses**: 4C4D and MASt3R are both non-commercial; GEN3C weights allow commercial use, but the model card states that "disabling the safety guardrails terminates the license", while the official inference script forcibly disables them. Not an issue for Phase 1 research validation; must be resolved before commercial use
+- None of the setup scripts have been verified on a real pod yet
+
+**Time**: about 1 hour
+**Cost**: $0
+
+---
+
+## Stage 2.1: Volume ID and balance check (2026-10-13)
+
+- The Global volume is now identified only by the ID in the config. The name contains a slash and is used only for display; other volumes with the same name will not be picked up by mistake (covered by tests)
+- gpu-up checks the balance before starting a pod: refuses if < $15 or unreadable; warns if the balance would drop below $15 after running the full time limit; gpu-status shows the balance
+- 61 guard tests and 20 runner tests, all passing
+- Real-account dry-run: both A100 types in stock (SXM $1.79/h, 3 regions; PCIe 2 regions). **However, the API key file was not found on the server, and the balance is still $7.07**, so the v2 API path is not yet verified; see report
+
+**Cost**: $0
+
+---
+
+## Stage 2.2: First pod, install and pack the three environments (2026-10-13 23:25 – 2026-10-14 01:27 UTC)
+
+**Result**: all succeeded, pod stopped. The Global volume now contains:
+
+| Content | Size |
 |---|---|
-| 环境包 `envpacks/`：gen3c 5.0 GB、vipe 4.8 GB、4c4d 5.2 GB、mast3r 2.4 GB | 17.4 GB |
-| 权重 `weights/`：gen3c 71 GB、vipe 4.0 GB、mast3r 2.6 GB | 77.6 GB |
+| Environment packs `envpacks/`: gen3c 5.0 GB, vipe 4.8 GB, 4c4d 5.2 GB, mast3r 2.4 GB | 17.4 GB |
+| Weights `weights/`: gen3c 71 GB, vipe 4.0 GB, mast3r 2.6 GB | 77.6 GB |
 
-**实测数据**（A100 SXM 80GB，$1.79/h）
+**Measurements** (A100 SXM 80GB, $1.79/h)
 
-| 项目 | 实测 |
+| Item | Measured |
 |---|---|
-| Global volume 顺序写 / 读 | 164 MB/s / **75 MB/s**（读取偏慢：GEN3C 71 GB 权重全部读一遍约 16 分钟） |
-| Global volume 小文件 | 350 个/秒 |
-| 容器盘读 | 10 GB/s |
-| GEN3C 安装 | 环境 19 分钟 + 权重 5 分钟 |
-| ViPE 安装 | 25 分钟（其中测试视频 18 分钟） |
-| 4C4D + MASt3R 安装 | 13 分钟 |
-| 打包一个环境 | 44–80 秒 |
+| Global volume sequential write / read | 164 MB/s / **75 MB/s** (reads are slow: reading all 71 GB of GEN3C weights once takes about 16 minutes) |
+| Global volume small files | 350 files/s |
+| Container disk read | 10 GB/s |
+| GEN3C install | environment 19 min + weights 5 min |
+| ViPE install | 25 min (18 min of which is the test video) |
+| 4C4D + MASt3R install | 13 min |
+| Packing one environment | 44–80 s |
 
-**花费**：pod 运行 2h03m，GPU 按 $1.79/h 计约 $3.66；账户余额从 $17.07 降到 $13.10，**实际花费 $3.97**（含容器盘和存储）。
-如果第一次就全部顺利，大约只需要 1 小时、约 $1.8。多花的时间来自下面这些问题，每次都是查清原因、修改脚本后重装。
+**Cost**: pod ran 2h03m; GPU at $1.79/h comes to about $3.66; account balance went from $17.07 to $13.10, **actual cost $3.97** (including container disk and storage).
+Had everything gone smoothly the first time, it would have taken only about 1 hour and about $1.8. The extra time came from the problems below; each time the cause was tracked down, the script fixed, and the install rerun.
 
-**遇到的问题（都已修复，写进了脚本注释和 pod/README.md）**
-1. GEN3C：MoGe 把 huggingface-hub 升到 2.x，transformers 无法 import；官方自检脚本出错时仍返回 0，差点把坏环境打包 → 重新固定版本，自检改为严格模式
-2. GEN3C：apex master 用了 torch 2.6 不支持的 `list[int]` 注解，24.10 又太旧编译不过 → 固定到 apex **25.09**
-3. ViPE、4C4D：conda-forge 混进 CUDA 13.x → 固定 `cuda-version`，并在创建环境后检查 nvcc 版本
-4. 4C4D：g++ 找不到 CUDA 头文件 → 把头文件目录加进 CPATH
-5. Global volume 不能设置文件时间 → 同步时不用 `rsync -t`
-6. 护栏：API 偶尔不返回 SSH 信息，巡检差点把正在装环境的 pod 误判为空闲 → 缓存上一次拿到的 SSH 命令（新增测试，共 62 个）
-7. atlas-run：Python 输出被缓冲，跟踪不到进度 → 改为逐行输出；启动任务的 SSH 有时不返回（任务本身已正常启动）→ 加了 setsid 和超时，根本原因待查
+**Problems encountered (all fixed, documented in script comments and pod/README.md)**
+1. GEN3C: MoGe upgraded huggingface-hub to 2.x and transformers could no longer be imported; the official self-check script still returned 0 on error, nearly packing a broken environment → re-pinned versions and made the self-check strict
+2. GEN3C: apex master uses a `list[int]` annotation that torch 2.6 does not support, while 24.10 is too old to compile → pinned apex to **25.09**
+3. ViPE, 4C4D: CUDA 13.x crept in from conda-forge → pinned `cuda-version` and check the nvcc version after creating the environment
+4. 4C4D: g++ could not find CUDA headers → added the header directory to CPATH
+5. The Global volume cannot set file timestamps → no `rsync -t` when syncing
+6. Guard: the API occasionally omits SSH info, and the watchdog nearly mistook a pod that was installing environments for idle → cache the last SSH command obtained (new test, 62 total)
+7. atlas-run: Python output was buffered so progress could not be followed → switched to line-by-line output; the SSH call that launches the task sometimes does not return (the task itself starts normally) → added setsid and a timeout; root cause still to be investigated
 
-**待办**
-- 下次开 pod 时实测"从环境包恢复"的耗时（预计每个环境 2–3 分钟）
-- ViPE 的 GeoCalib 太慢：Panoptic 有相机标定，可以直接用已知内参跳过这一步
-
----
-
-## 阶段 3：CMU Panoptic 数据脚本（2026-10-14）
-
-**做了什么**
-- 确认 CMU 服务器仍可访问，并且支持 HTTP 范围请求。从服务器实测只有约 3.5 MB/s，所以每个机位只截取需要的 10 秒，不下载整段视频（单个机位最大 3 GB）
-- 选了两段：`171204_pose1`（单人大动作）和 `160906_band1`（三人演奏，像活动现场）。用标定算出 31 台相机的位置，再看缩略图判断人的朝向，选出 4 个输入机位和 1 个评估机位，选择依据见 [docs/stage3-data.md](docs/stage3-data.md)
-- `pod/tools/panoptic_prepare.py`：截取 → 去畸变 → COLMAP（厘米换成米）→ GEN3C 输入视频 → meta.json
-- `pod/tools/mast3r_posed_points.py`：MASt3R 稠密匹配 + 已知位姿三角化，生成 4C4D 初始点云（代替官方用的 MAtCha）
-- `pod/tasks/panoptic.sh`：从环境包恢复环境（顺便实测恢复耗时）→ 逐个序列处理 → ViPE → 打包存回 Global volume
-
-**在服务器上的验证**（用真实下载的 5 帧，服务器不跑模型）
-- 整个准备流程跑通
-- 世界原点的竖线投影到 5 个机位都落在人身上，证明坐标和单位换算正确
-- 三角化合成测试：误差中位数小于 1 mm
-
-**遇到的问题**
-- bash 的 `( set -e; … ) || …` 写法里 set -e 不生效，任务出错也不会停 → 改成放到后台再 `wait`
-- ViPE 命令行不能直接使用已知内参（每次都先跑 GeoCalib）→ 保持官方默认流程，记录 ViPE 估计的焦距和真实标定的误差，作为"单台手机、没有标定"情况下的参考
-
-**耗时**：约 1 小时　**花费**：$0
-
-- 2026-10-14：按 Joey 决定，gpu-up 的余额下限从 $15 改为 $3（测试 64 个，全部通过）
+**To do**
+- On the next pod run, measure the time to "restore from environment pack" (expected 2–3 minutes per environment)
+- ViPE's GeoCalib is too slow: Panoptic has camera calibration, so the known intrinsics could be used to skip this step
 
 ---
 
-## 阶段 3.1：开 pod 准备 Panoptic 数据（2026-10-14 02:30 – 04:10 UTC）
+## Stage 3: CMU Panoptic data scripts (2026-10-14)
 
-**结果**
-- `171204_pose1`：✅ 全部完成。COLMAP 数据集（5 个机位 × 300 帧）、MASt3R 点云（33,153 个点）、GEN3C 输入视频、ViPE 结果都已打包成 `stage3.tar`（4 GB），存进 Global volume
-- `160906_band1`：截取、去畸变、点云（18,638 个点）已确认完成；ViPE 和打包**很可能也完成了**，但还没确认，因为会话在这期间中断。下次开 pod 时先检查，缺什么补什么（只需约 10 分钟）
+**What was done**
+- Confirmed the CMU server is still reachable and supports HTTP range requests. Measured only about 3.5 MB/s from the server, so only the needed 10 seconds are cut from each camera instead of downloading full videos (up to 3 GB per camera)
+- Chose two sequences: `171204_pose1` (single person, large motions) and `160906_band1` (three people playing music, similar to an event). Computed the positions of all 31 cameras from the calibration, then checked thumbnails for the subjects' facing direction, and selected 4 input cameras and 1 evaluation camera; selection rationale in [docs/stage3-data.md](docs/stage3-data.md)
+- `pod/tools/panoptic_prepare.py`: cut → undistort → COLMAP (centimeters to meters) → GEN3C input video → meta.json
+- `pod/tools/mast3r_posed_points.py`: MASt3R dense matching + triangulation with known poses to produce the 4C4D initial point cloud (replacing the MAtCha step used officially)
+- `pod/tasks/panoptic.sh`: restore environments from packs (measuring restore time along the way) → process each sequence → ViPE → pack and store back to the Global volume
 
-**实测数据**
-| 项目 | 实测 |
+**Verification on the server** (using 5 actually downloaded frames; no models run on the server)
+- The whole preparation pipeline runs end to end
+- A vertical line at the world origin projects onto the person in all 5 cameras, confirming the coordinates and unit conversion are correct
+- Synthetic triangulation test: median error under 1 mm
+
+**Problems encountered**
+- In bash, `set -e` has no effect inside a `( set -e; … ) || …` construct, so the task would not stop on errors → changed to run in the background and then `wait`
+- The ViPE command line cannot use known intrinsics directly (it always runs GeoCalib first) → kept the official default flow and recorded the error between ViPE's estimated focal length and the true calibration, as a reference for the "single phone, uncalibrated" case
+
+**Time**: about 1 hour  **Cost**: $0
+
+- 2026-10-14: Per Joey's decision, the gpu-up balance floor was lowered from $15 to $3 (64 tests, all passing)
+
+---
+
+## Stage 3.1: Pod run to prepare Panoptic data (2026-10-14 02:30 – 04:10 UTC)
+
+**Result**
+- `171204_pose1`: ✅ fully done. The COLMAP dataset (5 cameras × 300 frames), MASt3R point cloud (33,153 points), GEN3C input video and ViPE results are all packed into `stage3.tar` (4 GB) and stored in the Global volume
+- `160906_band1`: cutting, undistortion and point cloud (18,638 points) confirmed done; ViPE and packing **very likely also finished**, but not yet confirmed because the session was interrupted during this time. Check first on the next pod run and fill in whatever is missing (about 10 minutes)
+
+**Measurements**
+| Item | Measured |
 |---|---|
-| 从环境包恢复三套环境（4c4d、mast3r、vipe + 模型缓存） | **2 分 23 秒**（第一次安装约 1 小时） |
-| 截取 + 去畸变一个序列（5 机位 × 300 帧） | 约 3.5 分钟 |
-| MASt3R 点云 | 约 1 分钟（其中加载 2.75 GB 权重 56 秒） |
-| ViPE 处理 300 帧（1080p） | 约 10 分钟 |
-| 打包 4 GB 存进 Global volume | 28 秒 |
+| Restore three environments from packs (4c4d, mast3r, vipe + model cache) | **2 min 23 s** (first install took about 1 hour) |
+| Cut + undistort one sequence (5 cameras × 300 frames) | about 3.5 min |
+| MASt3R point cloud | about 1 min (56 s of which is loading the 2.75 GB weights) |
+| ViPE on 300 frames (1080p) | about 10 min |
+| Pack 4 GB into the Global volume | 28 s |
 
-**花费**：pod 运行 1h39m，余额从 $12.97 降到 $9.95，**$3.02**。其中约 $1 浪费在任务结束后的空转上（见问题 5）。
+**Cost**: pod ran 1h39m; balance went from $12.97 to $9.95, **$3.02**. About $1 of that was wasted idling after the task finished (see problem 5).
 
-**遇到的问题（都已修复）**
-1. ViPE 报 `No module named 'vipe'`：conda-pack 把命令行脚本的 shebang 改成了 `#!/usr/bin/env python`，结果用到了系统 Python → 调用 ViPE 时把它的环境放到 PATH 最前面
-2. ViPE 报 `distutils.compilers.errors`：安装时 pip 装的 setuptools 和 conda 的 setuptools 文件混在一起，打包恢复后对不上 → 临时用 `SETUPTOOLS_USE_DISTUTILS=stdlib` 绕开。**待办**：下次重建 ViPE 环境时改为用 conda 装 setuptools
-3. ViPE 的 `-v` 会启动 rerun 可视化查看器，pod 上没有显示器，ViPE 处理完以后进程卡住 20 分钟不退出 → 去掉 `-v`；日志出现 Finished 且结果文件写好后主动结束进程；已有结果自动跳过
-4. MASt3R 点云偏少：重投影阈值 2 像素太严，MASt3R 在 512 宽的图上匹配，放大到原图每像素放大 3.75 倍 → 改为 8 像素。放宽后点数只从 29,551 增加到 33,153，说明真正的原因是**夹角大于 70° 的机位对，匹配本身大多是错的**（详见下方"发现"）
-5. **会话中断后 pod 空转约 35 分钟**：任务约 03:35 跑完，但我的会话断了，没人关 pod。巡检本该在空闲 30 分钟后关机，可 04:00 读到 2% 的残留利用率，空闲计时被清零，最后在 04:10 按时长上限关掉 → 护栏新增**"登记的任务结束 5 分钟后自动关机"**（不依赖会话），空闲阈值改为 < 5%。护栏测试增至 74 个，全部通过
-6. 远程 `pkill -f` 把执行它的 shell 自己也匹配上、杀掉了，后面的命令没执行，旧任务的进程还活着 → 改为按 PID 精确 kill
+**Problems encountered (all fixed)**
+1. ViPE reported `No module named 'vipe'`: conda-pack rewrote the command-line scripts' shebang to `#!/usr/bin/env python`, so the system Python was used → when calling ViPE, put its environment first on PATH
+2. ViPE reported `distutils.compilers.errors`: setuptools files installed by pip and by conda got mixed during install and no longer matched after pack/restore → worked around temporarily with `SETUPTOOLS_USE_DISTUTILS=stdlib`. **To do**: install setuptools via conda next time the ViPE environment is rebuilt
+3. ViPE's `-v` launches the rerun visualization viewer; the pod has no display, so after ViPE finished the process hung for 20 minutes without exiting → removed `-v`; the process is killed once the log shows Finished and the result file is written; existing results are skipped automatically
+4. Too few MASt3R points: the 2-pixel reprojection threshold was too strict, since MASt3R matches on 512-wide images and each pixel scales up 3.75× at full resolution → changed to 8 pixels. Loosening it only raised the point count from 29,551 to 33,153, showing that the real cause is that **for camera pairs more than 70° apart, most of the matches themselves are wrong** (see "Findings" below)
+5. **The pod idled for about 35 minutes after the session was interrupted**: the task finished around 03:35, but my session had dropped and nobody stopped the pod. The watchdog should have stopped it after 30 idle minutes, but at 04:00 it read a residual 2% utilization, resetting the idle timer, and it was finally stopped at 04:10 by the time limit → the guard now **automatically stops the pod 5 minutes after a registered task finishes** (independent of the session), and the idle threshold is now < 5%. Guard tests increased to 74, all passing
+6. A remote `pkill -f` matched and killed the very shell running it, so later commands did not run and the old task's processes stayed alive → switched to killing by exact PID
 
-**发现（对实拍有直接参考价值）**
-- 相邻机位夹角小（26°、46°）的机位对，MASt3R 匹配 75–95% 能通过几何检验；夹角 73° 到 145° 的机位对只有 2–8% 能通过
-- 结论：**实拍时相邻手机之间的夹角最好不超过约 45°**，否则相邻机位之间几乎找不到可用的对应点，重建会很稀疏
-
----
-
-## 阶段 4：基线测试代码（2026-10-14）
-
-**做了什么**（还没开 pod）
-- `pod/tools/make_trajectories.py`：生成两个模型共用的相机轨迹（评估机位、输入机位 → 评估机位的运镜），用 MASt3R 点云对齐 ViPE 的尺度。合成测试通过：比例 1.3 准确还原，轨迹的起点、终点正确
-- `pod/tools/gen3c_run.py`：用官方 gen3c_dynamic.py 跑自定义轨迹，只替换"轨迹从哪来"，模型只加载一次（71 GB 权重）
-- `pod/tools/fourc4d_render.py`：用官方 render.py 渲染同一条运镜轨迹
-- `pod/tools/eval_metrics.py`：统一口径的 PSNR、SSIM、LPIPS，加"真值 | 预测 | 差异"对比视频。本地自检：完全一致时 100 dB，错开 8 像素时 24 dB，按 GEN3C 流程处理的真值 38.8 dB
-- `pod/tasks/baseline.sh`：环境 → 数据 → 轨迹 → GEN3C → 4C4D 训练和渲染 → 评估，分阶段记录耗时和峰值显存
-- 方法说明：[docs/stage4-method.md](docs/stage4-method.md)
-
-**发现并修正的公平性问题**
-- Panoptic 相机主点偏离中心最多约 18 像素，而 4C4D 默认主点居中 → 去畸变时把主点移到中心。阶段 3 的数据要按新流程重新生成，已包含在阶段 4 的任务里，约 15 分钟
-- 4C4D 官方只保存"评估机位分数最好"的 checkpoint，等于看了答案再挑模型 → 只在训练结束时测一次
-- 4C4D 的 yaml 会覆盖命令行参数 → 迭代次数改为写进 yaml
-
-**耗时**：约 2 小时　**花费**：$0
+**Findings (directly relevant to real-world shooting)**
+- For camera pairs with small angles between neighbors (26°, 46°), 75–95% of MASt3R matches pass the geometric check; for pairs 73° to 145° apart, only 2–8% pass
+- Conclusion: **when shooting for real, keep the angle between adjacent phones to no more than about 45°**; otherwise almost no usable correspondences can be found between neighboring cameras and the reconstruction will be very sparse
 
 ---
 
-## 阶段 4.1：开 pod 跑基线（2026-10-14 06:59 – 10:50 UTC）
+## Stage 4: Baseline test code (2026-10-14)
 
-**结果**
-- **GEN3C ✅**（单机位 cam24 + ViPE）：评估机位 PSNR **15.96**、SSIM **0.661**、LPIPS **0.578**。评估视角和运镜各生成了一段视频，已拉回服务器
-- **4C4D**：训练 30k 步跑完，之后的渲染和评估结果**已同步到 Global volume，但还没拉回服务器**。会话在这期间中断了，pod 被"任务结束自动关机"规则按设计关掉（任务结束 14 分钟后）。需要再开一个约 10 分钟的 pod，用新写的 `collect` 任务把结果拉回来
+**What was done** (no pod started yet)
+- `pod/tools/make_trajectories.py`: generates camera paths shared by both models (evaluation camera, and a camera path from an input camera → the evaluation camera), using the MASt3R point cloud to align ViPE's scale. Synthetic test passed: a 1.3 scale factor is recovered exactly, and the start and end points of the path are correct
+- `pod/tools/gen3c_run.py`: runs custom camera paths through the official gen3c_dynamic.py, replacing only "where the camera path comes from"; the model is loaded only once (71 GB of weights)
+- `pod/tools/fourc4d_render.py`: renders the same camera path through the official render.py
+- `pod/tools/eval_metrics.py`: PSNR, SSIM and LPIPS on a common basis, plus "ground truth | prediction | difference" comparison videos. Local self-check: 100 dB when identical, 24 dB when offset by 8 pixels, 38.8 dB for ground truth processed through the GEN3C pipeline
+- `pod/tasks/baseline.sh`: environments → data → camera paths → GEN3C → 4C4D training and rendering → evaluation, recording time and peak VRAM per phase
+- Method notes: [docs/stage4-method.md](docs/stage4-method.md)
 
-**实测数据**
-| 项目 | 实测 |
+**Fairness issues found and corrected**
+- Panoptic camera principal points are off-center by up to about 18 pixels, while 4C4D assumes a centered principal point by default → move the principal point to the center during undistortion. Stage 3 data must be regenerated with the new pipeline; this is included in the Stage 4 task, about 15 minutes
+- 4C4D officially saves only the checkpoint with "the best evaluation-camera score", which amounts to picking the model after seeing the answers → evaluate only once at the end of training
+- 4C4D's yaml overrides command-line arguments → the iteration count is now written into the yaml
+
+**Time**: about 2 hours  **Cost**: $0
+
+---
+
+## Stage 4.1: Pod run for baselines (2026-10-14 06:59 – 10:50 UTC)
+
+**Result**
+- **GEN3C ✅** (single camera cam24 + ViPE): evaluation camera PSNR **15.96**, SSIM **0.661**, LPIPS **0.578**. One video each was generated for the evaluation view and the camera path, and pulled back to the server
+- **4C4D**: 30k training steps completed; the subsequent rendering and evaluation results **were synced to the Global volume but not yet pulled back to the server**. The session was interrupted during this time, and the pod was stopped by the "auto-stop after task ends" rule as designed (14 minutes after the task ended). Another ~10-minute pod is needed to pull the results back with the newly written `collect` task
+
+**Measurements**
+| Item | Measured |
 |---|---|
-| 恢复环境 + 重做 pose1 数据 | 21.5 分钟（其中 ViPE 11 分钟） |
-| GEN3C 加载模型（71 GB 权重，从 Global volume 读取） | 约 4 分钟 |
-| GEN3C 生成 121 帧（704×1280） | **约 16 分钟一段**，峰值显存 **43.6 GB**（T5 文本编码器放到 CPU 的模式） |
-| 4C4D 训练 30k 步（4 机位 × 300 帧，960×540） | 约 2h15m（08:11 – 10:27 前后）；前 15k 步因为高斯点不断增多而越来越慢，之后稳定在每 1500 步约 9 分钟 |
-| ViPE 尺度 / 焦距 | 深度是真实值的 **1.55 倍**；焦距估成 2807，真实 1400，**误差 100%** |
+| Restore environments + redo pose1 data | 21.5 min (11 min of which is ViPE) |
+| GEN3C model load (71 GB of weights, read from the Global volume) | about 4 min |
+| GEN3C generating 121 frames (704×1280) | **about 16 min per clip**, peak VRAM **43.6 GB** (with the T5 text encoder offloaded to CPU) |
+| 4C4D training 30k steps (4 cameras × 300 frames, 960×540) | about 2h15m (roughly 08:11 – 10:27); the first 15k steps get progressively slower as the number of Gaussians grows, then it stabilizes at about 9 min per 1500 steps |
+| ViPE scale / focal length | depth is **1.55×** the true value; focal length estimated at 2807 vs. true 1400, **100% error** |
 
-**花费**：余额从 $9.71 降到 $2.66，**$7.05**。关机后 11 小时余额没有变化，说明早上看到的"不开 pod 也在扣钱"其实是延迟结算，存储费不是按小时持续扣的。
+**Cost**: balance went from $9.71 to $2.66, **$7.05**. The balance did not change in the 11 hours after shutdown, which means the "charges while no pod is running" seen in the morning were actually delayed billing; storage fees are not deducted continuously by the hour.
 
-**遇到的问题（都已修复）**
-1. GEN3C 找不到权重：仓库自带 `checkpoints/` 目录，软链接被建到了它里面 → 直接传绝对路径
-2. GEN3C 报错后进程卡住不退出，浪费约 8 分钟 → 出错时强制退出
-3. 4C4D：torchmetrics 需要 `pkg_resources`，新版 setuptools 已去掉 → 训练前自动补装 `setuptools<80`
-4. 分阶段显存采样一启动就退出（`[ … ] && …` 写法碰上 `set -e`）→ 改用 if；这次改用独立采样进程记录
-5. `4c4d-only` 模式把成功的任务也报成 failed → 只按 4C4D 判断
-6. **会话中断时结果来不及拉回服务器 pod 就关了** → 护栏关 pod 前先执行 `atlas-run --fetch` 把小文件拉回服务器（测试 77 个）；新增 `collect` 任务，从 Global volume 补拉结果
+**Problems encountered (all fixed)**
+1. GEN3C could not find its weights: the repository ships its own `checkpoints/` directory, and the symlink was created inside it → pass absolute paths directly
+2. After GEN3C errored, the process hung instead of exiting, wasting about 8 minutes → force exit on error
+3. 4C4D: torchmetrics needs `pkg_resources`, which newer setuptools removed → automatically install `setuptools<80` before training
+4. Per-phase VRAM sampling exited as soon as it started (a `[ … ] && …` construct colliding with `set -e`) → switched to if; this run used a separate sampling process instead
+5. `4c4d-only` mode reported successful tasks as failed → judge by 4C4D only
+6. **When the session is interrupted, the pod gets stopped before results are pulled back to the server** → the guard now runs `atlas-run --fetch` before stopping a pod to pull small files back to the server (77 tests); added a `collect` task to pull results from the Global volume afterwards
 
-**GEN3C 结果差的原因**：ViPE 把焦距估错了一倍，3D 结构横向被压缩，从评估机位投影过去整个场景都错位，中段几乎全是幻觉。这说明单机位方案的瓶颈在于"没有标定时的相机参数估计"，而手机 / Insta360 的内参只需一次性标定就能拿到
+**Why GEN3C's result is poor**: ViPE's focal-length estimate was off by a factor of two, so the 3D structure is compressed horizontally; projected into the evaluation camera, the entire scene is misaligned, and the middle section is almost entirely hallucinated. This shows that the bottleneck of the single-camera approach is "estimating camera parameters without calibration", whereas the intrinsics of a phone / Insta360 can be obtained with a one-time calibration
 
-**待办（Joey 决定后再做）**
-- GEN3C 变体①：单机位 + 真实内参（约 $0.6）
-- GEN3C 变体②：多机位模式（4 个机位、子弹时间，约 $1.3，需要先写稠密深度的代码）
-- 重建 ViPE 环境时改用 conda 装 setuptools（根本修复）
+**To do (after Joey decides)**
+- GEN3C variant ①: single camera + true intrinsics (about $0.6)
+- GEN3C variant ②: multi-camera mode (4 cameras, bullet time, about $1.3; requires writing dense-depth code first)
+- When rebuilding the ViPE environment, install setuptools via conda (root-cause fix)
 
-### 阶段 4.2：取回结果（2026-10-14 22:18，$0.05）
-- 开了一个短 pod 跑 `collect` 任务。确认两个序列的阶段 3 数据包都完整：pose1 3.8 GB，band1 4.0 GB
-- **4C4D 训练成功完成**：30k 步，2 小时 25 分钟，420 万个高斯点。训练脚本最后一步的自测：**评估机位 PSNR 21.42**（4C4D 自己的口径：300 帧、960×540），训练机位 34.57。作为参考，GEN3C 在我们的统一口径下是 15.96
-- **但渲染失败**（缺 `libEGL.so.1`，open3d 需要），而且**模型存在容器盘上，没进 `out/`，pod 关机后丢失**，需要重新训练
-- 修复：
-  - 4C4D 模型改存到 `out/full/4c4d_model`，训练完立即同步到 Global volume
-  - 渲染前安装 `libegl1`
-  - 拉取结果时跳过 `full/` 目录（大文件留在 Global volume）
-  - 新增 `baseline <序列> 4c4d` 模式：新 pod 上直接解压阶段 3 数据包，只跑 4C4D
+### Stage 4.2: Retrieve results (2026-10-14 22:18, $0.05)
+- Started a short pod to run the `collect` task. Confirmed that the Stage 3 data packs for both sequences are complete: pose1 3.8 GB, band1 4.0 GB
+- **4C4D training completed successfully**: 30k steps, 2 hours 25 minutes, 4.2 million Gaussians. The training script's final self-test: **evaluation camera PSNR 21.42** (4C4D's own metric basis: 300 frames, 960×540), training cameras 34.57. For reference, GEN3C scores 15.96 on our common basis
+- **But rendering failed** (missing `libEGL.so.1`, required by open3d), and **the model was saved on the container disk rather than in `out/`, so it was lost when the pod stopped**; retraining is needed
+- Fixes:
+  - The 4C4D model is now saved to `out/full/4c4d_model` and synced to the Global volume right after training
+  - Install `libegl1` before rendering
+  - Skip the `full/` directory when pulling results (large files stay on the Global volume)
+  - Added a `baseline <sequence> 4c4d` mode: on a new pod, unpack the Stage 3 data pack directly and run only 4C4D
 
 ---
 
-## 阶段 4.3：重跑 4C4D，完成基线对比（2026-10-14 22:36 – 2026-10-15 01:17 UTC）
+## Stage 4.3: Rerun 4C4D and complete the baseline comparison (2026-10-14 22:36 – 2026-10-15 01:17 UTC)
 
-**结果**：全部成功，任务结束 1 分钟后关机。对比报告：[docs/report-baseline.md](docs/report-baseline.md)
+**Result**: all succeeded; the pod was stopped 1 minute after the task finished. Comparison report: [docs/report-baseline.md](docs/report-baseline.md)
 
-| 方案 | PSNR | SSIM | LPIPS |
+| Method | PSNR | SSIM | LPIPS |
 |---|---|---|---|
-| GEN3C（1 机位） | 15.96 | 0.661 | 0.578 |
-| **4C4D（4 机位）** | **21.74** | **0.818** | **0.378** |
+| GEN3C (1 camera) | 15.96 | 0.661 | 0.578 |
+| **4C4D (4 cameras)** | **21.74** | **0.818** | **0.378** |
 
-- 从 Global volume 解压阶段 3 数据包，准备只用 2 分钟（上次重做数据要 21.5 分钟）
-- 4C4D 训练 2 小时 27 分钟，峰值显存 24.6 GB；训练结束的自测 21.69，和第一次的 21.42 一致，结果可复现
-- 模型训练完立即同步到 Global volume，渲染时 libEGL 也装好了，两个上次的问题都没再出现
-- 主观：4C4D 人物位置、动作正确，但纹理发糊、有漂浮物；GEN3C 错位，运镜终点出现两个人（穿帮）
+- Unpacking the Stage 3 data pack from the Global volume took only 2 minutes of preparation (redoing the data last time took 21.5 minutes)
+- 4C4D training took 2 hours 27 minutes, peak VRAM 24.6 GB; the end-of-training self-test gave 21.69, consistent with the first run's 21.42, so the result is reproducible
+- The model was synced to the Global volume right after training and libEGL was installed for rendering; neither of last time's problems recurred
+- Subjective: 4C4D gets the person's position and motion right, but textures are blurry and there are floaters; GEN3C is misaligned, and two people appear at the end of the camera path (a visible artifact)
 
-**花费**：$4.77。**第一阶段累计 GPU 花费约 $18.9**（$3.97 + $3.02 + $7.05 + $0.05 + $4.77，另有少量存储费）
+**Cost**: $4.77. **Cumulative Phase 1 GPU cost about $18.9** ($3.97 + $3.02 + $7.05 + $0.05 + $4.77, plus a small amount of storage fees)
 
-**遇到的问题**：分阶段显存采样的标记文件是在采样循环启动之后才创建的，循环一启动就退出 → 已调整顺序。这次的峰值显存从上一次 pod 的独立采样日志中取得
+**Problems encountered**: the marker file for per-phase VRAM sampling was created only after the sampling loop started, so the loop exited immediately → reordered. Peak VRAM for this run was taken from the separate sampling log of the previous pod
 
 ---
 
-## 阶段 4.4：4C4D 官方复现，N3V flame_steak（2026-10-15 01:57 – 05:42 UTC）
+## Stage 4.4: Official 4C4D reproduction, N3V flame_steak (2026-10-15 01:57 – 05:42 UTC)
 
-**目的**：判断 4C4D 在 Panoptic 上效果一般，是我们的环境 / 参数问题，还是数据本身太难。
+**Purpose**: determine whether 4C4D's mediocre results on Panoptic are due to our environment / parameters, or because the data itself is too hard.
 
-**结果**：复现成功，详见 [docs/reproduction-n3v.md](docs/reproduction-n3v.md)
+**Result**: reproduction succeeded; details in [docs/reproduction-n3v.md](docs/reproduction-n3v.md)
 
 | flame_steak | PSNR | DSSIM1 | DSSIM2 | LPIPS |
 |---|---|---|---|---|
-| 我们的复现 | **24.16** | 0.0738 | 0.0451 | 0.1137 |
-| 论文 Table 7 | 23.72 | 0.075 | 0.046 | 0.114 |
+| Our reproduction | **24.16** | 0.0738 | 0.0451 | 0.1137 |
+| Paper Table 7 | 23.72 | 0.075 | 0.046 | 0.114 |
 
-- **结论：环境和参数没有问题。** Panoptic 上低 2.5 dB，主要原因是机位布置：我们的 4 个机位围着人分布在约 145° 的弧上，相邻夹角 26°–73°；N3V 是一排朝同一方向的相机。另外 Panoptic 背景是纯白墙面，人物动作幅度也大
-- 实拍建议：机位集中在一个方向，相邻夹角不超过约 30°；虚拟运镜不要超出机位覆盖的范围
-- 训练 3 小时 14 分钟（1352×1014，235 万个高斯点）
+- **Conclusion: the environment and parameters are fine.** The 2.5 dB gap on Panoptic is mainly due to camera placement: our 4 cameras surround the person along an arc of about 145°, with 26°–73° between neighbors; N3V is a row of cameras all facing the same direction. In addition, the Panoptic background is a plain white wall and the subject's movements are large
+- Recommendations for real-world shooting: concentrate the cameras on one side, with no more than about 30° between neighbors; keep virtual camera paths within the area covered by the cameras
+- Training took 3 hours 14 minutes (1352×1014, 2.35 million Gaussians)
 
-**遇到的问题**（都已修复，每次失败约 2 分钟）
-1. 新版 gdown 去掉了 `--id` 参数 → 改用 Google Drive 的确认下载直链，并校验 gzip 完整性
-2. `find | grep | head` 管道里 grep 收到 SIGPIPE，配合 `set -e` / `pipefail` 让任务中止 → 所有接 head/tail 的管道都加 `|| true`；判断训练机位改用 bash 字符串匹配，不用 `echo | grep -q`
-3. 开 pod 前先在服务器上只列出预处理包的文件清单、解出两个小文件核对（21 个机位、PINHOLE、命名格式），避免在 pod 上白跑
+**Problems encountered** (all fixed; each failure cost about 2 minutes)
+1. Newer gdown removed the `--id` argument → switched to Google Drive's confirmed direct-download link and verify gzip integrity
+2. In a `find | grep | head` pipeline, grep received SIGPIPE, which together with `set -e` / `pipefail` aborted the task → added `|| true` to every pipeline feeding head/tail; training-camera detection now uses bash string matching instead of `echo | grep -q`
+3. Before starting the pod, listed only the file manifest of the preprocessed archive on the server and extracted two small files to check (21 cameras, PINHOLE, naming format), to avoid wasted runs on the pod
 
-**花费**：$7.30。**第一阶段累计 GPU 花费约 $26.2**
-
----
-
-## 阶段 5（第一版）：运镜工作台，样例场景（2026-10-15）
-
-**Joey 的要求**：用 4C4D 的样例做一个前端，从一个固定机位出发，可以设置 4C4D 的运镜轨迹。
-
-**做了什么**（说明见 [frontend/README.md](frontend/README.md)）
-- Flask 后端只监听 127.0.0.1:8765，通过 SSH 隧道访问；服务器重启后自动启动
-- 页面：three.js 点云 + 21 个真实机位预览；选固定机位（缩略图）；关键帧编辑（右移 / 上移 / 前进以"机位间距"为单位，左右转、上下转、视场角、输出时间、源视频时间）；"镜头视角"下用点云播放运镜预览
-- `traj.py`：关键帧 → 每帧位姿（平滑曲线 + 球面插值 + 缓入缓出），8 个单元测试全部通过
-- 确认弹窗显示 GPU、帧数、预计时间和花费、余额；确认后由独立进程开 pod → 渲染 → 拉回视频 → 关 pod，页面显示进度和实际花费
-- pod 端 `fourc4d_direct.py`：直接加载训练好的模型导出场景 / 按轨迹渲染，**不需要训练数据集**，单次任务预计约 5 分钟、$0.15
-- 模拟模式（不开 GPU）把整个流程测了一遍：导出场景、轨迹计算、未确认的请求被拒、任务进行中不能重复提交、视频播放和下载都正常
-
-**还没做**
-- pod 端的导出和渲染脚本还没在真实 GPU 上跑过
-- 素材上传（阶段 5 原计划的另一半）和 GEN3C 模型选择
-
-**遇到的问题**：远程 / 本地 `pkill -f` 又一次匹配到执行它的 shell 自己 → 启动脚本改为按端口查 PID 再 kill
-
-**花费**：$0
-
-### 阶段 5.1：运镜工作台真实 GPU 测试（2026-10-15 06:23 – 06:28 UTC）
-
-- **准备场景预览**：从开 pod 到关 pod 约 1.5 分钟，$0.04。21 个机位的缩略图都由模型正确渲染出来，点云是从 235 万个高斯里抽的 20 万个点
-- **渲染 4 秒示例运镜**（cam00 → 右移 2 格、左转 10°）：约 1.5 分钟，$0.045；渲染本身 5.8 秒（20.8 帧/秒），显存 4.3 GB。画面正确，最下方前景（训练机位没拍到的区域）有些模糊
-- **发现并修复的问题**：任务结束时按名字关 pod，但导出和渲染各开了一个同名的 `atlas-render`，护栏发现名字对应两个 pod 就拒绝操作，**渲染 pod 没被关掉**。我发现后立即按 ID 关掉，只多跑了约 30 秒。护栏的"任务结束自动关机"也会在 12 分钟内兜底。修复：调度器记录 pod ID，结束时**按 ID 关闭并删除**；花费计时改为从调用 gpu-up 之前开始；页面上的预估公式按实测更新（固定开销约 2 分钟）
+**Cost**: $7.30. **Cumulative Phase 1 GPU cost about $26.2**
 
 ---
 
-## 仓库整理：让别人可以照着部署（2026-10-15）
+## Stage 5 (first version): Camera-path workbench, sample scene (2026-10-15)
 
-**Joey 的要求**：把前端和后端都更新到 GitHub，整理仓库，让大家一部署就能用；提示注册 RunPod，并选择推荐机型。
+**Joey's request**: build a frontend using the 4C4D sample, starting from a fixed camera, where the 4C4D camera path can be set.
 
-**做了什么**
-- 新增 [DEPLOY.md](DEPLOY.md)：从注册 RunPod、充值、推荐机型（A100 80GB，没货才用 H100）、建 Global volume 和两个 API key，到部署、训练样例模型、打开工作台，一共 6 步
-- 新增 `deploy.sh`：一键安装或自检（`--check`），只改当前用户自己的东西；缺了什么会按顺序列出来
-- 新增 `requirements.txt`；系统 Python 缺 Flask 时，自动在仓库里建 `.venv`
-- 去掉写死的本机信息：
-  - 巡检 crontab 改成模板，安装时自动填入本机的家目录和 PATH；
-  - 文档里的 `atlas@` 改成 `<用户名>@`
-- 模型改为放在 Global volume 的固定位置 `models/n3v_flame_steak/`：
-  - `n3v_repro` 训练完会自动放过去；
-  - 固定位置没有模型时，自动用最近一次 N3V 训练结果，所以现有模型不用搬；
-  - 没有模型时报错，并提示该运行哪条命令
-- README 增加"快速开始"和流程图（docs/workflow.svg）
+**What was done** (documentation in [frontend/README.md](frontend/README.md))
+- The Flask backend listens only on 127.0.0.1:8765 and is accessed via SSH tunnel; it starts automatically after a server reboot
+- Page: three.js point cloud + previews of the 21 real cameras; choose a fixed camera (thumbnails); keyframe editing (move right / up / forward in units of "camera spacing", pan left/right, tilt up/down, field of view, output time, source video time); in "camera view", the camera path is previewed by playing it over the point cloud
+- `traj.py`: keyframes → per-frame poses (smooth curves + spherical interpolation + ease in/out); all 8 unit tests pass
+- The confirmation dialog shows the GPU, frame count, estimated time and cost, and balance; after confirmation a separate process starts the pod → renders → pulls back the video → stops the pod, and the page shows progress and actual cost
+- Pod side `fourc4d_direct.py`: loads the trained model directly to export the scene / render along a camera path, **without needing the training dataset**; each render job is expected to take about 5 minutes and $0.15
+- Tested the whole flow in simulation mode (no GPU): scene export, camera path computation, rejection of unconfirmed requests, no duplicate submissions while a job is running, and video playback and download all work
 
-**测试**：护栏 77 个、执行器 20 个、轨迹 8 个测试全部通过；在空的家目录下模拟新用户运行 `deploy.sh --check`，能正确列出缺少的 4 项；模拟模式下工作台流程正常
+**Not done yet**
+- The pod-side export and render scripts have not yet been run on a real GPU
+- Footage upload (the other half of the original Stage 5 plan) and GEN3C model selection
 
-**花费**：$0
+**Problems encountered**: a remote / local `pkill -f` once again matched the very shell running it → the launch script now looks up the PID by port and kills that
 
----
+**Cost**: $0
 
-## BUS 205 结果展示页 /showcase（2026-10-15）
+### Stage 5.1: Real GPU test of the camera-path workbench (2026-10-15 06:23 – 06:28 UTC)
 
-**Joey 的要求**：期末展示用的英文结果页，在工作台里新增 /showcase，课堂录屏。
-
-**做了什么**
-- 6 屏：标题 → 机位布局（分散 vs 集中）→ GEN3C vs 4C4D 并排 → 与真实机位对比（三联视频）→ N3V 复现（视频 + 与论文的指标对比表）→ 工作台渲染样例和实测花费
-- GEN3C 的"真实内参"和"多机位子弹时间"两个变体没跑过，按要求不加这一节
-- 机位俯视图用真实相机位姿算出：
-  - Panoptic 的 4 个输入机位绕主体分布 144°，最大间隙 72°，评估机位正好在这个间隙里；
-  - N3V 的 21 个机位都在一侧的 53° 以内，4 个输入机位分布 51°
-- 素材生成脚本 `frontend/showcase_build.py`：视频转 H.264 + faststart（共 7.2 MB），放在仓库外；页面数据只含数字和文件名
-- 用无头 Chromium 在 1920×1080 和 1366×768 下截图逐屏检查（修了标签重叠、三联视频表头错位）；检查了页面、数据和视频元数据，都没有路径、IP、ID、用户名
-
-**问题**：最初用"光轴交汇点"当 N3V 的主体位置，因为 N3V 光轴几乎平行，算出的角度偏大（64°）。改为用点云中位数，并投影到地面算方位角
-
-**花费**：$0
+- **Preparing the scene preview**: about 1.5 minutes from pod start to pod stop, $0.04. Thumbnails for all 21 cameras were rendered correctly by the model; the point cloud is 200,000 points sampled from the 2.35 million Gaussians
+- **Rendering a 4-second sample camera path** (cam00 → move right 2 steps, pan left 10°): about 1.5 minutes, $0.045; rendering itself took 5.8 seconds (20.8 frames/s), 4.3 GB VRAM. The image is correct; the foreground at the very bottom (an area the training cameras did not capture) is somewhat blurry
+- **Problem found and fixed**: at the end of a job the pod was stopped by name, but export and rendering had each started a pod with the same name `atlas-render`; the guard found two pods for that name and refused to act, so **the render pod was not stopped**. I noticed and immediately stopped it by ID, adding only about 30 seconds of runtime. The guard's "auto-stop after task ends" would also have caught it within 12 minutes. Fix: the scheduler records the pod ID and **stops and removes it by ID** at the end; cost timing now starts before calling gpu-up; the estimate formula on the page was updated from measurements (fixed overhead about 2 minutes)
 
 ---
 
-## 运镜工作台改为英文界面，可切换中文（2026-10-15）
+## Repository cleanup: making it deployable by others (2026-10-15)
 
-**Joey 的要求**：主页面默认英文，右上角 EN / 中文 切换并记住选择；后端只返回 code + 参数，由前端翻译；/showcase 保持全英文。
+**Joey's request**: push both the frontend and backend to GitHub and clean up the repository so anyone can deploy it and use it right away; prompt users to sign up for RunPod and choose the recommended GPU type.
 
-**做了什么**
-- 新增 `frontend/static/i18n.js`：英文 / 中文两套词典，术语统一为 keyframe、camera path、base camera、confirm & render、scene、render job；选择存 localStorage，读写都包了 try/catch，读不到用英文
-- `index.html`：所有静态文字改成 `data-i18n` 标注；顶栏"结果展示页 ↗"改成 "Results ↗"
-- `app.js`：滑块名、关键帧列表、提示、估算、确认弹窗、任务栏、余额 / GPU 状态全部走 `t()`；切换语言时重画这些动态部分，不打断正在播放的视频
-- `app.py`：错误统一为 `{"code", "params"}`，共 10 种，例如 `job_running`、`too_many_frames {max}`；Flask 自己的 400/404/409 也转成 code
-- `job_runner.py`：进度存 `stage_code` + `stage_params`（例如 `rendering {done, total}`），失败存 `error_code` + `error_params`；技术细节只写进 job.log
-- `models.json` 增加 `title_en`
-- 兼容改版前的旧任务：它们只有中文的 stage 文本，前端按 state 显示，不会露出中文
+**What was done**
+- Added [DEPLOY.md](DEPLOY.md): 6 steps, from signing up for RunPod, adding funds, the recommended GPU type (A100 80GB; H100 only when out of stock), creating the Global volume and two API keys, to deploying, training the sample model and opening the workbench
+- Added `deploy.sh`: one-step install or self-check (`--check`); it only changes the current user's own files; anything missing is listed in order
+- Added `requirements.txt`; if the system Python lacks Flask, a `.venv` is created automatically inside the repository
+- Removed hard-coded local machine details:
+  - The watchdog crontab is now a template that fills in the local home directory and PATH at install time;
+  - `atlas@` in the docs changed to `<username>@`
+- Models are now kept at a fixed location on the Global volume, `models/n3v_flame_steak/`:
+  - `n3v_repro` places the model there automatically after training;
+  - if there is no model at the fixed location, the most recent N3V training result is used automatically, so the existing model does not need to be moved;
+  - if there is no model at all, it errors out and says which command to run
+- README gained a "Quick start" section and a workflow diagram (docs/workflow.svg)
 
-**测试**（不开 GPU）
-- 端到端：无头 Chromium + DevTools 协议，在模拟模式下用英文走完整流程，共 12 项检查，每一步都扫描页面文字和 title / alt / aria-label，**中文残留 0**，控制台错误 0：
-  - 准备场景（确认弹窗 → 任务）→ 选基准机位 → 加关键帧、改滑块 → 镜头视角播放 → 确认弹窗 → 渲染中 → 结果视频；
-  - 8 种后端错误码的英文翻译；
-  - 新格式的失败任务、改版前的旧任务（含中文 stage）；
-  - 切换中文 / 英文后刷新，选择能记住；
-  - localStorage 被禁用时默认英文、仍能切换
-- 真实数据：在正式服务器上用英文打开，两条旧任务显示为 "Done / Finished"，页面无中文
-- 代码 grep：前端代码里的中文只剩注释、`i18n.js` 的中文词典、"中文"切换按钮本身，以及不会显示在界面上的服务器终端输出和内部日志
-- 轨迹 8、护栏 77、执行器 20 个单元测试全部通过
+**Tests**: 77 guard, 20 runner and 8 camera path tests all pass; simulating a new user running `deploy.sh --check` in an empty home directory correctly lists the 4 missing items; the workbench flow works in simulation mode
 
-**花费**：$0
+**Cost**: $0
+
+---
+
+## BUS 205 showcase page /showcase (2026-10-15)
+
+**Joey's request**: an English results page for the final presentation, added to the workbench as /showcase, to be screen-recorded for class.
+
+**What was done**
+- 6 screens: title → camera layout (spread out vs. concentrated) → GEN3C vs. 4C4D side by side → comparison with a real camera (three-panel video) → N3V reproduction (video + metric comparison table against the paper) → workbench render sample and measured cost
+- The two GEN3C variants, "true intrinsics" and "multi-camera bullet time", were never run, so as requested this section was left out
+- The top-down camera maps are computed from real camera poses:
+  - Panoptic's 4 input cameras span 144° around the subject, with a maximum gap of 72°, and the evaluation camera sits right in that gap;
+  - N3V's 21 cameras all lie within 53° on one side, and the 4 input cameras span 51°
+- Asset build script `frontend/showcase_build.py`: converts videos to H.264 + faststart (7.2 MB total), stored outside the repository; page data contains only numbers and file names
+- Took screenshots with headless Chromium at 1920×1080 and 1366×768 and checked each screen (fixed overlapping labels and misaligned headers on the three-panel video); checked the page, data and video metadata, and none contain paths, IPs, IDs or usernames
+
+**Problem**: initially used "the intersection point of the optical axes" as the N3V subject position; because N3V's optical axes are nearly parallel, the computed angle was too large (64°). Changed to use the point-cloud median, projected onto the ground plane to compute azimuths
+
+**Cost**: $0
+
+---
+
+## Camera-path workbench switched to an English UI, with a Chinese option (2026-10-15)
+
+**Joey's request**: the main page defaults to English, with an EN / 中文 toggle in the top-right corner that remembers the choice; the backend returns only a code + parameters and the frontend does the translation; /showcase stays fully English.
+
+**What was done**
+- Added `frontend/static/i18n.js`: English and Chinese dictionaries, with unified terms keyframe, camera path, base camera, confirm & render, scene, render job; the choice is stored in localStorage, with every read and write wrapped in try/catch, falling back to English if unreadable
+- `index.html`: all static text is now tagged with `data-i18n`; the top-bar "Results page ↗" link (previously in Chinese) changed to "Results ↗"
+- `app.js`: slider names, keyframe list, hints, estimates, confirmation dialog, job bar, and balance / GPU status all go through `t()`; switching language redraws these dynamic parts without interrupting a playing video
+- `app.py`: errors are unified as `{"code", "params"}`, 10 kinds in total, e.g. `job_running`, `too_many_frames {max}`; Flask's own 400/404/409 are also converted to codes
+- `job_runner.py`: progress is stored as `stage_code` + `stage_params` (e.g. `rendering {done, total}`), failures as `error_code` + `error_params`; technical details go only into job.log
+- `models.json` gained `title_en`
+- Compatibility with jobs from before the change: they only have Chinese stage text, so the frontend displays them by state and no Chinese leaks through
+
+**Tests** (no GPU)
+- End to end: headless Chromium + DevTools protocol, running the full flow in English in simulation mode, 12 checks in total; at every step the page text and title / alt / aria-label were scanned, with **0 Chinese leftovers** and 0 console errors:
+  - prepare scene (confirmation dialog → job) → choose base camera → add keyframes, adjust sliders → play in camera view → confirmation dialog → rendering → result video;
+  - English translations of 8 backend error codes;
+  - a failed job in the new format, and old jobs from before the change (with Chinese stage text);
+  - after switching between Chinese / English and refreshing, the choice is remembered;
+  - with localStorage disabled, it defaults to English and switching still works
+- Real data: opened in English on the production server, the two old jobs show as "Done / Finished", with no Chinese on the page
+- Code grep: the only Chinese left in the frontend code is comments, the Chinese dictionary in `i18n.js`, the "中文" toggle button itself, and server terminal output and internal logs that never appear in the UI
+- 8 camera path, 77 guard and 20 runner unit tests all pass
+
+**Cost**: $0
 

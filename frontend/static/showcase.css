@@ -1,4 +1,4 @@
-/* 课堂投影用：深色背景、大字号、每节一屏。橙色 = 4C4D / 输入机位，蓝色 = GEN3C */
+/* For classroom projection: dark background, large type, one screen per section. Orange = 4C4D / input cameras, blue = GEN3C */
 :root {
   --bg: #0b0f10; --panel: #151b1d; --line: #26302e; --fg: #eef2f0; --muted: #9aa6a0;
   --accent: #f08a4b; --gen3c: #7cb2ff; --good: #6cc38a; --bad: #ec7c7c;
@@ -28,7 +28,7 @@ h2 { margin: 0 0 .6vh; font-size: clamp(28px, 3.1vw, 58px); line-height: 1.1; le
 video { display: block; width: 100%; background: #000; border-radius: 10px; }
 video.wide { max-height: 58vh; object-fit: contain; }
 
-/* 01 机位 */
+/* 01 cameras */
 .two-col { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 3vw; }
 .layout-card { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 2vh 1.6vw; display: flex; flex-direction: column; gap: 1vh; min-height: 0; }
 .layout-card figcaption { font-size: clamp(18px, 1.7vw, 32px); display: flex; align-items: center; gap: 12px; }
@@ -51,7 +51,7 @@ video.wide { max-height: 58vh; object-fit: contain; }
 .video-labels { display: grid; grid-template-columns: 1fr 1fr; font-size: clamp(18px, 1.6vw, 30px); }
 .video-labels span:last-child { padding-left: 1vw; }
 
-/* 03 三联 */
+/* 03 triptych */
 .tri-head { display: grid; grid-template-columns: repeat(3, 1fr); text-align: center; color: var(--muted); font-size: clamp(15px, 1.3vw, 24px); font-weight: 600; margin-top: .5vh; }
 .tri-wrap { width: min(100%, 131vh); margin: 0 auto; display: flex; flex-direction: column; gap: 1.4vh; }
 .tri { display: flex; flex-direction: column; gap: .8vh; }
@@ -74,7 +74,7 @@ video.wide { max-height: 58vh; object-fit: contain; }
 .card span { font-size: clamp(14px, 1.15vw, 21px); }
 .card b { font-size: clamp(20px, 1.9vw, 36px); line-height: 1.25; }
 
-/* 页码 */
+/* page number */
 .pager { position: fixed; right: 2vw; bottom: 2vh; display: flex; gap: 14px; color: var(--muted); font-size: clamp(13px, 1vw, 18px); pointer-events: none; }
 .keyhint { position: fixed; left: 50%; bottom: 2vh; transform: translateX(-50%); color: var(--muted); font-size: clamp(13px, 1vw, 18px); background: var(--panel); border: 1px solid var(--line); padding: 6px 14px; border-radius: 999px; transition: opacity .6s; }
 .keyhint.gone { opacity: 0; }

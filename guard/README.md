@@ -1,97 +1,97 @@
-# GPU 护栏（阶段 1）
+# GPU guard (Stage 1)
 
-所有 RunPod pod 的开、关、查看、自动巡检都走这里，目的是**不让 GPU 白烧钱**，也**不碰别的项目的 pod**。
+Every RunPod pod start, stop, status check and automatic patrol goes through here. The goal is to **never let GPUs burn money for nothing** and **never touch other projects' pods**.
 
-| 命令 | 作用 |
+| Command | Purpose |
 |---|---|
-| `gpu-up [--gpu auto] [--image IMG] [--hours 6] [--name xxx] [--disk 200] [--dry-run]` | 开 pod |
-| `gpu-down <名字或ID> [--delete] [--dry-run]` / `gpu-down --all` | stop（或 delete）atlas- pod |
-| `gpu-status [-v]` | 列出 atlas- pod：已运行时长、估算花费、距自动关机时间、GPU 利用率、空闲时长；`-v` 显示 SSH 命令 |
-| `gpu-guard [--dry-run] [-v]` | 巡检，由 cron 每 10 分钟执行 |
+| `gpu-up [--gpu auto] [--image IMG] [--hours 6] [--name xxx] [--disk 200] [--dry-run]` | Start a pod |
+| `gpu-down <name or ID> [--delete] [--dry-run]` / `gpu-down --all` | Stop (or delete) atlas- pods |
+| `gpu-status [-v]` | List atlas- pods: uptime, estimated cost, time until auto-stop, GPU utilization, idle time; `-v` shows the SSH command |
+| `gpu-guard [--dry-run] [-v]` | Patrol, run by cron every 10 minutes |
 
-四个命令都是 `atlas_gpu.py` 的软链接，用 `install.sh` 安装（幂等）。安装时还会生成服务器专用的 SSH key `~/.ssh/atlas_runpod`。
+All four commands are symlinks to `atlas_gpu.py`, installed with `install.sh` (idempotent). Installation also generates a server-dedicated SSH key `~/.ssh/atlas_runpod`.
 
-## 规则（写死在代码里）
+## Rules (hard-coded)
 
-- **GPU 白名单**：A100 80GB（SXM / PCIe）。只有两种 A100 在**所有区域**都没货，或者都开不出来时，才允许 H100（SXM / PCIe / NVL）。其他型号一律拒绝。
-- **不锁区域**：创建 pod 时不指定数据中心，由 RunPod 在任何有货的区域调度。只用 Secure Cloud。
-- **名字**：强制 `atlas-` 前缀；gpu-down / gpu-guard 只会操作 `atlas-` 前缀的 pod（有测试覆盖）。
-- **数量**：同时最多 1 个处于计费状态的 atlas- pod（PROVISIONING / STARTING / RUNNING 都算）。
-- **存储**：挂载 Global volume `atlas_data`。pod 内的路径由变量 `ATLAS_VOL_MOUNT` 决定（默认 `/workspace`），并作为环境变量 `$ATLAS_VOL` 传进 pod；容器盘根目录是 `$ATLAS_LOCAL=/opt/atlas`，默认 200 GB。详见 [docs/storage-and-env.md](../docs/storage-and-env.md)。
-- **时长**：`--hours` 默认 6，最大 6；到点由巡检 stop。
-- **余额**：开 pod 前用 `runpodctl user` 读取账户余额（v2 API 没有余额接口）；**余额 < $3 或读不到时拒绝开 pod**（2026-10-14 Joey 决定，原为 $15），因为余额归零 15 天后 Global volume 会被永久删除。跑满时长后余额会低于 $3 时，会给出提醒。`gpu-status` 也会显示余额。
+- **GPU whitelist**: A100 80GB (SXM / PCIe). H100 (SXM / PCIe / NVL) is only allowed when both A100 types are out of stock in **all regions**, or all fail to start. Every other model is rejected.
+- **No region lock**: pods are created without specifying a data center, so RunPod schedules them in any region with stock. Secure Cloud only.
+- **Name**: forced `atlas-` prefix; gpu-down / gpu-guard only ever act on `atlas-` prefixed pods (covered by tests).
+- **Count**: at most 1 billed atlas- pod at a time (PROVISIONING / STARTING / RUNNING all count).
+- **Storage**: mounts the Global volume `atlas_data`. The in-pod path is set by the variable `ATLAS_VOL_MOUNT` (default `/workspace`) and passed into the pod as the env var `$ATLAS_VOL`; the container disk root is `$ATLAS_LOCAL=/opt/atlas`, 200 GB by default. See [docs/storage-and-env.md](../docs/storage-and-env.md).
+- **Duration**: `--hours` defaults to 6, max 6; the patrol stops the pod when time is up.
+- **Balance**: before starting a pod the account balance is read with `runpodctl user` (the v2 API has no balance endpoint); **if the balance is < $3 or unreadable, starting a pod is refused** (Joey's decision 2026-10-14, previously $15), because the Global volume is permanently deleted 15 days after the balance hits zero. If the balance would drop below $3 after running the full duration, a warning is shown. `gpu-status` also shows the balance.
 
 ## API key
 
-Global volume 只能通过 **RunPod REST API v2** 挂载，runpodctl 2.15 不支持。所以护栏使用一个**单独的限权 key**：
+The Global volume can only be mounted through the **RunPod REST API v2**; runpodctl 2.15 does not support it. So the guard uses a **separate restricted key**:
 
-1. RunPod 后台 → Settings → API Keys → Create API Key，名字建议 `atlas-gpu-guard`，权限选 **Restricted**，只勾选：
-   - `pods:read`、`pods:write`（列出、开、停 pod）
-   - `volumes:read`（按名字找 Global volume）
-   - `catalog:read`（查 GPU 库存和价格）
+1. RunPod console → Settings → API Keys → Create API Key, suggested name `atlas-gpu-guard`, permission **Restricted**, and only tick:
+   - `pods:read`, `pods:write` (list, start, stop pods)
+   - `volumes:read` (find the Global volume by name)
+   - `catalog:read` (query GPU stock and prices)
 
-   如果后台显示的权限名称和这里不一样，就按含义选 Pods 读写、Volumes 只读、Catalog 只读，其余全部不勾。
-2. 在服务器上**自己**保存（不要贴到对话里）：
+   If the console shows different permission names, choose by meaning: Pods read/write, Volumes read-only, Catalog read-only, nothing else.
+2. Save it on the server **yourself** (do not paste it into the chat):
    ```bash
    install -m 600 /dev/null ~/.config/atlas-gpu/runpod_api_key
-   nano ~/.config/atlas-gpu/runpod_api_key   # 粘贴 key，保存
+   nano ~/.config/atlas-gpu/runpod_api_key   # paste the key, save
    ```
 
-脚本只在发请求时读取这个文件，从不打印、也不写进日志；文件权限宽于 600 时拒绝使用。`~/.runpod` 里 runpodctl 的 key 本脚本不碰。
+The script only reads this file when sending a request, never prints it or writes it to logs, and refuses to use it if its permissions are wider than 600. This script never touches runpodctl's key in `~/.runpod`.
 
-没有这个 key 时：
-- `gpu-up --dry-run` 仍可预览（库存来自 runpodctl）
-- 真开 pod 会被拒绝
-- 巡检退回 runpodctl，仍然能列出 pod 并按时长 stop
+Without this key:
+- `gpu-up --dry-run` still previews (stock comes from runpodctl)
+- Actually starting a pod is refused
+- The patrol falls back to runpodctl and can still list pods and stop them on the time limit
 
-## 巡检逻辑（gpu-guard）
+## Patrol logic (gpu-guard)
 
-0. **任务结束自动关机**（2026-10-14 新增）：
-   - `atlas-run` 启动任务时把 run ID 登记到护栏的状态文件里。
-   - 巡检发现登记的任务都已结束（done 或 failed），而且最后一个结束已满 5 分钟（留时间给紧接着的下一个任务），就先执行 pre_stop，再 stop。
-   - 这样关 pod 不依赖 Claude 的会话还在不在。2026-10-14 会话中断，任务跑完后 pod 空转了约 35 分钟才被时长上限关掉，就是这个原因。
-   - 不想自动关就用 `atlas-run --keep-alive`。
+0. **Auto-stop when runs finish** (added 2026-10-14):
+   - When `atlas-run` starts a run, it registers the run ID in the guard's state file.
+   - When the patrol finds that all registered runs have finished (done or failed) and the last one finished at least 5 minutes ago (leaving time for a follow-up run), it runs pre_stop and then stops the pod.
+   - This way stopping the pod does not depend on Claude's session still being alive. On 2026-10-14 the session dropped and the pod sat idle for about 35 minutes after the run finished until the time limit stopped it; that is why this exists.
+   - Use `atlas-run --keep-alive` if you do not want the auto-stop.
 
-1. **超时**：本次运行时长 ≥ 设定上限 → stop。这一步只依赖 pod 列表，不需要 SSH；API 故障时自动改用 runpodctl。所以最坏情况下 pod 也只会跑满 6 小时。
-2. **空闲**：
-   - 先看 API v2 返回的 GPU 实时利用率 `runtime.gpus[].util`。**≥ 5%** 就算忙，不用 SSH。阈值原来是 > 0，但残留进程会报 1–2%，把空闲计时清零，2026-10-14 实测因此没能按空闲关机。
-   - 为 0 或拿不到时，再 SSH 到 pod 复核：`nvidia-smi` 在 5 秒内采样 5 次取最大值，同时检查 `$ATLAS_LOCAL/.atlas_busy`。这个标记 15 分钟内被 touch 过就不算空闲，因为下载数据、解压环境、CPU 预处理时 GPU 利用率本来就是 0。
-   - **连续 ≥ 30 分钟**低于 5% → stop。
-   - 什么都测不到时：开机后 30 分钟内不计入空闲；之后按空闲计时（连不上的 pod 一样在花钱）。
-3. **stop 前先同步**：容器盘在 stop 后会清空，所以 stop 前会尽力 SSH 执行一次 `$ATLAS_LOCAL/bin/pre_stop`（由阶段 2 的任务执行器提供，最多 10 分钟），把结果同步回 Global volume。失败了也照样 stop。
-4. 没有通过 gpu-up 开的 atlas- pod 同样受管，按 6 小时上限处理。
-5. 日志写到 `~/logs/gpu-guard.log`。
+1. **Time limit**: current run time ≥ configured limit → stop. This step only relies on the pod list, not SSH; on API failure it automatically switches to runpodctl. So in the worst case a pod runs for at most 6 hours.
+2. **Idle**:
+   - First check the live GPU utilization `runtime.gpus[].util` returned by API v2. **≥ 5%** counts as busy, no SSH needed. The threshold used to be > 0, but leftover processes report 1–2% and reset the idle timer; on 2026-10-14 this prevented an idle stop in practice.
+   - If it is 0 or unavailable, SSH into the pod to double-check: `nvidia-smi` is sampled 5 times over 5 seconds and the maximum is taken, and `$ATLAS_LOCAL/.atlas_busy` is checked. If that marker was touched within the last 15 minutes the pod is not idle, because GPU utilization is naturally 0 while downloading data, unpacking environments or doing CPU preprocessing.
+   - Below 5% for **≥ 30 consecutive minutes** → stop.
+   - When nothing can be measured: not counted as idle within 30 minutes of boot; after that the idle timer runs (an unreachable pod is still costing money).
+3. **Sync before stop**: the container disk is wiped on stop, so before stopping the guard makes a best-effort SSH call to `$ATLAS_LOCAL/bin/pre_stop` (provided by the Stage 2 task runner, up to 10 minutes) to sync results back to the Global volume. It stops anyway if that fails.
+4. atlas- pods not started via gpu-up are managed too, with the 6-hour limit.
+5. Logs go to `~/logs/gpu-guard.log`.
 
-### 空闲检测方案
+### Idle detection options
 
-| 方案 | 说明 |
+| Option | Notes |
 |---|---|
-| A. 只用 RunPod API 的利用率 | 不需要 SSH；但这是单次快照，看不到 busy 标记 |
-| B. 只用 SSH + nvidia-smi | 数据最直接；但依赖 SSH 可达 |
-| **采用：A 为主，B 复核** | API 说"忙"时直接相信它（省一次 SSH）；API 说"空闲"或拿不到数据时，必须再经过 SSH 复核才会开始计空闲，避免一次快照误杀正在下载或预处理的任务 |
+| A. RunPod API utilization only | No SSH needed; but it is a single snapshot and cannot see the busy marker |
+| B. SSH + nvidia-smi only | Most direct data; but depends on SSH being reachable |
+| **Chosen: A first, B to double-check** | When the API says "busy", trust it (saves an SSH call); when the API says "idle" or has no data, an SSH check is required before the idle timer starts, so a single snapshot cannot kill a run that is downloading or preprocessing |
 
-> 阶段 1 最初只用了 B，因为 runpodctl 拿不到利用率。改用 v2 API 以后就同时具备了两种手段。
+> Stage 1 originally only used B, because runpodctl cannot report utilization. After switching to the v2 API both methods are available.
 
 ## SSH
 
-pod 的 SSH 公钥通过环境变量 `PUBLIC_KEY` 注入：包括本服务器专用的 `~/.ssh/atlas_runpod.pub`，加上 RunPod 账户里已登记的公钥（Joey 自己的电脑仍然能登录）。账户的 SSH key 设置不做任何改动。
+Pod SSH public keys are injected via the env var `PUBLIC_KEY`: this server's dedicated `~/.ssh/atlas_runpod.pub` plus the public keys already registered on the RunPod account (Joey's own computer can still log in). The account's SSH key settings are not changed.
 
-## 测试
+## Tests
 
 ```bash
-guard/tests/run_tests.sh   # 假 API v2 + 假 runpodctl / ssh，74 个用例，不访问真实账号
-gpu-up --dry-run           # 真实账号上只读预览，不开 pod
+guard/tests/run_tests.sh   # fake API v2 + fake runpodctl / ssh, 77 test cases, never touches the real account
+gpu-up --dry-run           # read-only preview against the real account, does not start a pod
 ```
 
-**尚未在真实 pod 上验证的部分**（第一次真开 pod 时检查）：
-- v2 API 实际返回的字段：`runtime.gpus[].util`、`ssh.direct.command`、`startedAt`、`cost`
-- `PUBLIC_KEY` 注入是否生效
-- 200 GB 容器盘在各区域是否都能开出来
+**Not yet verified on a real pod** (check on the first real pod start):
+- Fields actually returned by the v2 API: `runtime.gpus[].util`, `ssh.direct.command`, `startedAt`, `cost`
+- Whether `PUBLIC_KEY` injection works
+- Whether a 200 GB container disk can be started in every region
 
-## 运行时文件（都不在仓库里）
+## Runtime files (none of them in the repo)
 
-- `~/.config/atlas-gpu/runpod_api_key`（600）：限权 API key
-- `~/.config/atlas-gpu/config.json`（**必需**）：`{"global_volume_id": "...", "global_volume_label": "..."}`。只按 ID 识别 Global volume，名字只用于显示
-- `~/.ssh/atlas_runpod`：pod SSH 私钥
-- `~/.local/state/atlas-gpu/<podID>.json`：时长上限、空闲计时
-- `~/logs/gpu-guard.log`、`~/logs/gpu-guard.cron.log`
+- `~/.config/atlas-gpu/runpod_api_key` (600): restricted API key
+- `~/.config/atlas-gpu/config.json` (**required**): `{"global_volume_id": "...", "global_volume_label": "..."}`. The Global volume is identified by ID only; the name is for display only
+- `~/.ssh/atlas_runpod`: pod SSH private key
+- `~/.local/state/atlas-gpu/<podID>.json`: time limit, idle timer
+- `~/logs/gpu-guard.log`, `~/logs/gpu-guard.cron.log`

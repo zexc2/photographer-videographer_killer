@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# 阶段 4：GEN3C vs 4C4D 基线测试。用法：atlas-run baseline [序列名]（默认 171204_pose1）
-#   1. 恢复环境；按（主点居中后的）新流程重新准备该序列数据（tasks/panoptic.sh）
-#   2. 生成两个模型共用的轨迹 + ViPE 尺度对齐（tools/make_trajectories.py）
-#   3. GEN3C：评估机位 + 运镜轨迹，各生成 121 帧（tools/gen3c_run.py，模型只加载一次）
-#   4. 4C4D：4 个机位训练 30k 步 → 官方 render.py --validate 渲染评估机位 → 自定义运镜轨迹（tools/fourc4d_render.py）
-#   5. 统一口径评估 PSNR / SSIM / LPIPS（tools/eval_metrics.py），生成对比视频
-# 每一步记录耗时和峰值显存，结果放 out/（小文件拉回服务器），完整结果由 run_task.sh 同步到 Global volume。
+# Stage 4: GEN3C vs 4C4D baseline. Usage: atlas-run baseline [sequence] (default 171204_pose1)
+#   1. Restore envs; re-prepare the sequence with the new (principal-point-centred) pipeline (tasks/panoptic.sh)
+#   2. Build the trajectories shared by both models + ViPE scale alignment (tools/make_trajectories.py)
+#   3. GEN3C: 121 frames each for the eval camera and the camera-motion trajectory (tools/gen3c_run.py, model loaded once)
+#   4. 4C4D: train 30k steps on 4 cameras -> official render.py --validate for the eval camera -> custom camera-motion trajectory (tools/fourc4d_render.py)
+#   5. Evaluate PSNR / SSIM / LPIPS the same way for both (tools/eval_metrics.py) and build comparison videos
+# Each step records time and peak VRAM; results go to out/ (small files fetched to the server), full results are synced to Global volume by run_task.sh.
 RUN_DIR=$1; shift
 SEQ=${1:-171204_pose1}
-# 第二个参数（模式）：
-#   all        全流程（默认）
-#   4c4d-only  环境、数据、GEN3C 都已在本 pod 上完成时，只重跑 4C4D
-#   4c4d       新 pod 上只跑 4C4D：恢复 4c4d / vipe 环境，从 Global volume 解压阶段 3 数据包（不重新截取、不重跑 ViPE）
+# Second argument (mode):
+#   all        full pipeline (default)
+#   4c4d-only  envs, data and GEN3C already done on this pod; re-run only 4C4D
+#   4c4d       run only 4C4D on a fresh pod: restore 4c4d / vipe envs, unpack the stage 3 data package from Global volume (no re-trimming, no ViPE re-run)
 MODE=${2:-all}
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 source "$HERE/lib/common.sh"
@@ -21,20 +21,20 @@ W=$ATLAS_WORK/panoptic/$SEQ
 S4=$W/stage4
 mkdir -p "$OUT"
 ITERS=${FOURC_ITERS:-30000}
-# 4C4D 模型放在 out/full 下：训练完立即同步到 Global volume，pre_stop 也会同步。
-# 2026-10-14 模型放在容器盘上，后续渲染失败、pod 关机后，2.4 小时的训练结果丢失
+# The 4C4D model lives under out/full: synced to Global volume right after training, and pre_stop syncs it too.
+# On 2026-10-14 the model was on the container disk; a later render failure and pod shutdown lost 2.4 hours of training
 MODEL_DIR=$OUT/full/4c4d_model
 
-# ---------------------------------------------------------------- 分阶段计时 + 峰值显存
+# ---------------------------------------------------------------- per-phase timing + peak VRAM
 declare -A T_S VRAM
 phase_begin() {
   PHASE=$1; PHASE_T0=$SECONDS
   echo 0 > "$ATLAS_LOGS/peak_$PHASE"
-  # 标记文件必须在启动采样循环之前创建，否则循环一开始就因为找不到标记而退出（2026-10-14 峰值一直是 0）
+  # The marker file must exist before the sampling loop starts, or the loop exits immediately (2026-10-14: peak was always 0)
   touch "$ATLAS_LOGS/peak_$PHASE.on"
   ( while [ -f "$ATLAS_LOGS/peak_$PHASE.on" ]; do
       m=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | sort -n | tail -1)
-      # 用 if，不用 [ … ] && …：后者在"不更大"时返回非 0，配合 set -e 会让采样进程直接退出（2026-10-14 实测峰值全是 0）
+      # Use if, not [ ... ] && ...: the latter returns non-zero when "not larger", and with set -e the sampler exits (2026-10-14: all peaks were 0)
       if [ -n "$m" ] && [ "$m" -gt "$(cat "$ATLAS_LOGS/peak_$PHASE")" ]; then echo "$m" > "$ATLAS_LOGS/peak_$PHASE"; fi
       sleep 3; done ) &
   log "▶ $PHASE"
@@ -42,7 +42,7 @@ phase_begin() {
 phase_end() {
   rm -f "$ATLAS_LOGS/peak_$PHASE.on"; sleep 4
   T_S[$PHASE]=$((SECONDS - PHASE_T0)); VRAM[$PHASE]=$(cat "$ATLAS_LOGS/peak_$PHASE")
-  log "■ $PHASE 用时 ${T_S[$PHASE]}s，峰值显存 ${VRAM[$PHASE]} MiB"
+  log "■ $PHASE took ${T_S[$PHASE]}s, peak VRAM ${VRAM[$PHASE]} MiB"
 }
 write_timing() {
   python3 - "$OUT/timing.json" <<PY
@@ -53,23 +53,23 @@ PY
 }
 trap write_timing EXIT
 
-# ---------------------------------------------------------------- 1. 环境 + 数据
+# ---------------------------------------------------------------- 1. envs + data
 if [ "$MODE" = 4c4d ]; then
   phase_begin env_and_data
   bash "$HERE/setup_4c4d.sh"
-  env_restore vipe "$(env_key "$HERE/setup_vipe.sh")" || die "Global volume 上没有 vipe 环境包"
+  env_restore vipe "$(env_key "$HERE/setup_vipe.sh")" || die "no vipe env pack on Global volume"
   if [ ! -f "$W/meta.json" ]; then
     PKG=$ATLAS_DATA/panoptic/$SEQ/prepared/stage3.tar
-    [ -f "$PKG" ] || die "没有阶段 3 数据包 $PKG"
+    [ -f "$PKG" ] || die "stage 3 data package $PKG missing"
     mkdir -p "$W"
     cp "$PKG" "$ATLAS_CACHE/stage3.tar" && tar -xf "$ATLAS_CACHE/stage3.tar" -C "$W" && rm -f "$ATLAS_CACHE/stage3.tar"
-    log "已解压阶段 3 数据包到 $W"
+    log "Unpacked stage 3 data package to $W"
   fi
   phase_end
 elif [ "$MODE" != 4c4d-only ]; then
 phase_begin env_and_data
-bash "$HERE/setup_gen3c.sh"          # 恢复 GEN3C 环境，权重链接到 Global volume
-bash "$HERE/tasks/panoptic.sh" "$RUN_DIR" "$SEQ"   # 4c4d / mast3r / vipe 环境 + 重新准备数据（主点居中）
+bash "$HERE/setup_gen3c.sh"          # restore GEN3C env, weights linked to Global volume
+bash "$HERE/tasks/panoptic.sh" "$RUN_DIR" "$SEQ"   # 4c4d / mast3r / vipe envs + re-prepare data (principal point centred)
 phase_end
 fi
 
@@ -78,8 +78,8 @@ read -r TRAIN EVAL_CAM <<<"$(python3 -c "import json; m=json.load(open('$META'))
 GEN3C_ENV=$ATLAS_ENVS/gen3c
 FOURC_ENV=$ATLAS_ENVS/4c4d
 
-# ---------------------------------------------------------------- 2. 轨迹 + 尺度对齐
-# make_trajectories 只需要 numpy + OpenEXR：gen3c 和 vipe 环境都有，4c4d 模式下只恢复了 vipe
+# ---------------------------------------------------------------- 2. trajectories + scale alignment
+# make_trajectories only needs numpy + OpenEXR: both gen3c and vipe envs have them, and 4c4d mode restores only vipe
 TRAJ_PY=$GEN3C_ENV/bin/python; [ -x "$TRAJ_PY" ] || TRAJ_PY=$ATLAS_ENVS/vipe/bin/python
 [ -f "$S4/trajectories.json" ] || "$TRAJ_PY" "$HERE/tools/make_trajectories.py" --work "$W"
 cp "$S4/trajectories.json" "$OUT/"
@@ -93,11 +93,11 @@ cat > "$S4/gen3c_jobs.json" <<JSON
  {"name": "${SEQ}_gen3c_path", "vipe": "$W/gen3c/vipe", "traj": "$S4/gen3c_path.npz"}]
 JSON
 GEN3C_OK=1
-# 权重目录用绝对路径：GEN3C 仓库自带一个 checkpoints/ 目录（只有 README），setup_gen3c.sh 的 ln -sfn 会把链接建到
-# 它里面（checkpoints/checkpoints），导致找不到 model.pt（实测 2026-10-14）。不改 setup_gen3c.sh 以免环境包失效。
+# Use an absolute weights path: the GEN3C repo ships a checkpoints/ dir (README only), so setup_gen3c.sh's ln -sfn creates the link
+# inside it (checkpoints/checkpoints) and model.pt is not found (seen 2026-10-14). setup_gen3c.sh is left alone so env packs stay valid.
 (cd "$ATLAS_SRC/GEN3C" && CUDA_HOME=$GEN3C_ENV PATH=$GEN3C_ENV/bin:$PATH PYTHONPATH=. \
    "$GEN3C_ENV/bin/python" "$HERE/tools/gen3c_run.py" --jobs "$S4/gen3c_jobs.json" --out "$S4/gen3c" --checkpoint_dir "$ATLAS_WEIGHTS/gen3c/checkpoints") \
-  || { log "GEN3C 失败，改用 --offload 重试一次（显存不够时）"; \
+  || { log "GEN3C failed, retrying once with --offload (in case VRAM ran out)"; \
        (cd "$ATLAS_SRC/GEN3C" && CUDA_HOME=$GEN3C_ENV PATH=$GEN3C_ENV/bin:$PATH PYTHONPATH=. \
           "$GEN3C_ENV/bin/python" "$HERE/tools/gen3c_run.py" --jobs "$S4/gen3c_jobs.json" --out "$S4/gen3c" --checkpoint_dir "$ATLAS_WEIGHTS/gen3c/checkpoints" --offload) \
        || GEN3C_OK=0; }
@@ -107,20 +107,20 @@ fi
 
 # ---------------------------------------------------------------- 4. 4C4D
 phase_begin fourc4d_train
-# 4C4D 用的 torchmetrics 0.11.4 需要 pkg_resources，新版 setuptools 已移除 → 训练前补装（实测 2026-10-14；
-# 写在这里而不是 setup_4c4d.sh，改安装脚本会让环境包失效、需要重装）
+# torchmetrics 0.11.4 used by 4C4D needs pkg_resources, which newer setuptools removed -> install it before training (seen 2026-10-14;
+# done here rather than in setup_4c4d.sh, since changing the setup script invalidates the env pack and forces a reinstall)
 "$FOURC_ENV/bin/python" -c "import pkg_resources" 2>/dev/null || "$FOURC_ENV/bin/python" -m pip install -q "setuptools<80"
 FC=$S4/4c4d_${SEQ}.yaml
 "$FOURC_ENV/bin/python" - "$ATLAS_SRC/4C4D/configs/dynerf/flame_steak.yaml" "$FC" "$W/4c4d" "$MODEL_DIR" "$ITERS" <<'PY'
 import sys
 from omegaconf import OmegaConf
 c = OmegaConf.load(sys.argv[1])
-# 注意：train.py 先解析命令行再合并 yaml，yaml 里的值会覆盖命令行，所以迭代次数必须写在这里
+# Note: train.py parses the CLI first and then merges the yaml, so yaml values override the CLI; the iteration count must be set here
 c.OptimizationParams.iterations = int(sys.argv[5])
 c.ModelParams.source_path = sys.argv[3]
 c.ModelParams.model_path = sys.argv[4]
 c.time_duration = [0.0, 10.0]
-c.exhaust_test = False   # 训练中不反复在评估机位上测试（既省时间，也避免用评估机位挑模型）
+c.exhaust_test = False   # don't keep testing on the eval camera during training (saves time and avoids picking the model using the eval camera)
 OmegaConf.save(c, sys.argv[2])
 PY
 FOURC_OK=1
@@ -129,44 +129,44 @@ FOURC_OK=1
    --test_iterations "$ITERS" --save_iterations "$ITERS" 2>&1 | tr '\r' '\n' | grep -vE '^Training: +[0-9]+%.*it/s\]$' | tail -40) \
   || FOURC_OK=0
 CKPT=$MODEL_DIR/run/chkpnt_best.pth
-[ -f "$CKPT" ] || { log "4C4D 没有产出 checkpoint"; FOURC_OK=0; }
-[ $FOURC_OK = 1 ] && { vol_sync "$OUT/" "$ATLAS_RESULTS/$(basename "$RUN_DIR")/" && log "4C4D 模型已同步到 Global volume"; } || true
+[ -f "$CKPT" ] || { log "4C4D produced no checkpoint"; FOURC_OK=0; }
+[ $FOURC_OK = 1 ] && { vol_sync "$OUT/" "$ATLAS_RESULTS/$(basename "$RUN_DIR")/" && log "4C4D model synced to Global volume"; } || true
 phase_end
 
 if [ $FOURC_OK = 1 ]; then
   phase_begin fourc4d_render
-  # render.py 导入的 open3d 需要 libEGL（runpod/pytorch 镜像里没有，2026-10-14 渲染因此失败）
+  # open3d imported by render.py needs libEGL (missing from the runpod/pytorch image; rendering failed because of it on 2026-10-14)
   apt_ensure libegl1 libgl1 libgomp1
   RARGS=(--config "$FC" --training_view "$TRAIN" --start_checkpoint "$CKPT" --res 2 --output_dir run)
   (cd "$ATLAS_SRC/4C4D" && "$FOURC_ENV/bin/python" render.py "${RARGS[@]}" --validate 2>&1 | tail -5) \
-    || log "4C4D 评估机位渲染失败"
+    || log "4C4D eval-camera render failed"
   (cd "$ATLAS_SRC/4C4D" && ATLAS_4C4D_PATH=$S4/4c4d_path.npz PYTHONPATH=. \
      "$FOURC_ENV/bin/python" "$HERE/tools/fourc4d_render.py" "${RARGS[@]}" --traj custom 2>&1 | tail -5) \
-    || log "4C4D 运镜渲染失败"
+    || log "4C4D camera-motion render failed"
   phase_end
 fi
 
-# ---------------------------------------------------------------- 5. 评估 + 对比视频
+# ---------------------------------------------------------------- 5. evaluation + comparison videos
 phase_begin eval
 EV="$FOURC_ENV/bin/python $HERE/tools/eval_metrics.py --gt-dir $W/4c4d/images --gt-cam $EVAL_CAM"
 mkdir -p "$OUT/videos"
 if [ $GEN3C_OK = 1 ]; then
   $EV --pred "$S4/gen3c/${SEQ}_gen3c_eval.mp4" --kind gen3c --frames 121 --out "$OUT/metrics_gen3c.json" \
-      --video "$OUT/videos/${SEQ}_eval_gen3c_vs_gt.mp4" || log "GEN3C 评估失败"
+      --video "$OUT/videos/${SEQ}_eval_gen3c_vs_gt.mp4" || log "GEN3C evaluation failed"
 fi
 if [ $FOURC_OK = 1 ]; then
   TEST_R=$(ls -d "$MODEL_DIR"/run/render/test/ours_*/renders 2>/dev/null | tail -1)
   TRAJ_R=$(ls -d "$MODEL_DIR"/run/render/traj/ours_*/renders 2>/dev/null | tail -1)
   if [ -n "$TEST_R" ]; then
     $EV --pred "$TEST_R" --kind 4c4d --frames 121 --out "$OUT/metrics_4c4d.json" \
-        --video "$OUT/videos/${SEQ}_eval_4c4d_vs_gt.mp4" || log "4C4D 评估失败"
+        --video "$OUT/videos/${SEQ}_eval_4c4d_vs_gt.mp4" || log "4C4D evaluation failed"
     $EV --pred "$TEST_R" --kind 4c4d --frames 300 --out "$OUT/metrics_4c4d_300f.json" || true
   fi
   [ -n "$TRAJ_R" ] && ffmpeg -loglevel error -y -framerate 24 -i "$TRAJ_R/%05d.png" -c:v libx264 -crf 18 \
     -pix_fmt yuv420p "$S4/${SEQ}_4c4d_path.mp4" || true
   cp "$MODEL_DIR"/run/render/test/ours_*/../../stats/*.json "$OUT/" 2>/dev/null || true
 fi
-# 运镜视频（两个模型同一条轨迹），缩到 960 宽方便在服务器上看；完整分辨率的在 Global volume
+# Camera-motion videos (same trajectory for both models), scaled to 960 wide for viewing on the server; full resolution stays on Global volume
 for v in "$S4/gen3c/${SEQ}_gen3c_path.mp4" "$S4/${SEQ}_4c4d_path.mp4" "$S4/gen3c/${SEQ}_gen3c_eval.mp4"; do
   [ -f "$v" ] && ffmpeg -loglevel error -y -i "$v" -vf scale=960:-2 -c:v libx264 -crf 24 -pix_fmt yuv420p "$OUT/videos/$(basename "$v")"
 done
@@ -177,8 +177,8 @@ if [ -f "$OUT/videos/${SEQ}_gen3c_path.mp4" ] && [ -f "$OUT/videos/${SEQ}_4c4d_p
 fi
 phase_end
 
-# 完整结果（含全分辨率视频、4C4D 渲染）放进 out/full，由 run_task.sh 同步到 Global volume；
-# fetch 只拉回 ≤20MB 的文件，且排除 .pth
+# Full results (incl. full-resolution videos, 4C4D renders) go to out/full and are synced to Global volume by run_task.sh;
+# fetch only pulls files <=20MB and excludes .pth
 mkdir -p "$OUT/full"
 cp "$S4"/gen3c/*.mp4 "$S4"/*.mp4 "$S4"/*.yaml "$OUT/full/" 2>/dev/null || true
 [ -d "$MODEL_DIR/run/render" ] && tar -cf "$OUT/full/4c4d_renders.tar" -C "$MODEL_DIR/run/render" . 2>/dev/null || true
@@ -199,5 +199,5 @@ m["gen3c_timing"] = load("gen3c_timing.json")
 json.dump(m, open(o / "metrics.json", "w"), indent=2, ensure_ascii=False)
 print(json.dumps(m, ensure_ascii=False))
 PY
-# 4c4d-only 模式下 GEN3C 是有意跳过的，只按 4C4D 判断成败（2026-10-14 曾因此把成功的任务报成 failed）
+# In 4c4d-only mode GEN3C is skipped on purpose, so success is judged on 4C4D only (2026-10-14 a successful run was once reported as failed because of this)
 if [ "$MODE" != all ]; then [ $FOURC_OK = 1 ]; else [ $GEN3C_OK = 1 ] && [ $FOURC_OK = 1 ]; fi

@@ -1,4 +1,4 @@
-# ===== 密钥 / 凭据（公开仓库，绝不提交）=====
+# ===== Keys / credentials (public repo, never commit) =====
 .env
 .env.*
 *.env
@@ -14,7 +14,7 @@ id_ed25519*
 hf_token*
 .netrc
 
-# ===== 模型权重 =====
+# ===== Model weights =====
 *.pt
 *.pth
 *.safetensors
@@ -25,7 +25,7 @@ hf_token*
 checkpoints/
 weights/
 
-# ===== 数据集 / 媒体 / 点云 / 训练产出 =====
+# ===== Datasets / media / point clouds / training outputs =====
 data/
 datasets/
 outputs/
@@ -53,7 +53,7 @@ uploads/
 *.zip
 *.7z
 
-# ===== 日志 / 运行时状态（可能含 pod ID、IP）=====
+# ===== Logs / runtime state (may contain pod IDs, IPs) =====
 logs/
 *.log
 state/
@@ -61,7 +61,7 @@ state/
 pods.json
 pod_*.json
 
-# ===== Python / 编辑器 / 系统 =====
+# ===== Python / editors / OS =====
 __pycache__/
 *.py[cod]
 .venv/

@@ -1,5 +1,5 @@
-// ATLAS 运镜工作台前端。坐标约定：服务器给的 c2w 是 OpenCV（x 右、y 下、z 前），
-// three.js 相机是 x 右、y 上、z 后，所以 three 的相机矩阵 = c2w · diag(1, -1, -1, 1)。
+// ATLAS camera path workbench frontend. Coordinate convention: the server's c2w is OpenCV (x right, y down, z forward);
+// a three.js camera is x right, y up, z back, so the three camera matrix = c2w · diag(1, -1, -1, 1).
 "use strict";
 
 const $ = (id) => document.getElementById(id);
@@ -8,7 +8,7 @@ const S = {
   path: null, mode: "free", playing: false, playT0: 0, pointSize: 0.01,
 };
 const FIELDS = [
-  // 键, 最小, 最大, 步长, 单位（"sp" = 机位间距，按语言翻译）；标签文字是 i18n 的 f.<键>
+  // key, min, max, step, unit ("sp" = camera spacing, translated per language); label text is i18n f.<key>
   ["t", 0, 30, 0.1, "s"],
   ["src", 0, 10, 0.1, "s"],
   ["right", -4, 4, 0.05, "sp"],
@@ -29,7 +29,7 @@ const scene3 = new THREE.Scene();
 scene3.background = new THREE.Color(0x15191a);
 const freeCam = new THREE.PerspectiveCamera(60, 1, 0.01, 1000);
 const shotCam = new THREE.PerspectiveCamera(60, 4 / 3, 0.01, 1000);
-// OrbitControls 在创建时记下相机的"上方向"，换基准机位（上方向变了）时要重新创建
+// OrbitControls records the camera "up" vector at creation, so recreate it when the base camera (and thus up) changes
 let controls = makeControls();
 function makeControls() {
   const c = new THREE.OrbitControls(freeCam, renderer.domElement);
@@ -42,7 +42,7 @@ Object.values(groups).forEach((g) => g && scene3.add(g));
 function cvToThree(c2w) {
   const m = new THREE.Matrix4();
   const a = c2w;
-  // 行优先写入，同时把 y、z 两列取反
+  // Write row-major and negate the y and z columns
   m.set(a[0][0], -a[0][1], -a[0][2], a[0][3],
         a[1][0], -a[1][1], -a[1][2], a[1][3],
         a[2][0], -a[2][1], -a[2][2], a[2][3],
@@ -62,7 +62,7 @@ function placeCamera(cam, c2w, fov, aspect) {
 
 function frustum(c2w, fov, aspect, depth, color, opacity = 1) {
   const h = Math.tan((fov * Math.PI) / 360) * depth, w = h * aspect;
-  // 相机坐标（OpenCV）：z 前、y 下
+  // Camera coordinates (OpenCV): z forward, y down
   const pts = [[0, 0, 0], [-w, -h, depth], [w, -h, depth], [w, h, depth], [-w, h, depth]];
   const P = pts.map(([x, y, z]) => new THREE.Vector3(
     c2w[0][0] * x + c2w[0][1] * y + c2w[0][2] * z + c2w[0][3],
@@ -70,7 +70,7 @@ function frustum(c2w, fov, aspect, depth, color, opacity = 1) {
     c2w[2][0] * x + c2w[2][1] * y + c2w[2][2] * z + c2w[2][3]));
   const idx = [0, 1, 0, 2, 0, 3, 0, 4, 1, 2, 2, 3, 3, 4, 4, 1];
   const g = new THREE.BufferGeometry().setFromPoints(idx.map((i) => P[i]));
-  // 顶边加粗标记"上方"，帮助判断相机有没有倒过来
+  // Thicker top edge marks "up", to show whether the camera is upside down
   const up = new THREE.BufferGeometry().setFromPoints([P[1], P[2]]);
   const grp = new THREE.Group();
   grp.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color, transparent: opacity < 1, opacity })));
@@ -100,7 +100,7 @@ function loop() {
   }
   controls.update();
   if (S.mode === "shot") {
-    // 镜头视角：按输出画幅留黑边
+    // Shot view: letterbox to the output aspect ratio
     const r = wrap.getBoundingClientRect(), a = shotAspect();
     let w = r.width, h = r.width / a;
     if (h > r.height) { h = r.height; w = h * a; }
@@ -120,8 +120,8 @@ function loop() {
   }
 }
 
-// ---------------------------------------------------------------- 数据
-// 出错时抛出的 Error 带 info = {code, params}（后端给的），显示时用 tErr(e.info) 按当前语言翻译
+// ---------------------------------------------------------------- data
+// Errors thrown carry info = {code, params} (from the backend); display with tErr(e.info) to translate into the current language
 async function api(path, opts) {
   let r;
   try { r = await fetch(path, opts); } catch { const e = new Error("network"); e.info = { code: "network" }; throw e; }
@@ -182,13 +182,13 @@ function selectBase(name) {
   document.querySelectorAll(".cam").forEach((b) => b.classList.toggle("on", b.dataset.cam === name));
   const c = S.scene.cameras[name];
   const dur = +$("duration").value, src = Math.min(dur, S.scene.source_seconds);
-  // 默认示例：从这个机位出发，向右平移 2 格并略微向左转，保持主体在画面里
+  // Default example: start at this camera, move 2 spacings right and turn slightly left to keep the subject in frame
   S.keyframes = [
     { t: 0, src: 0, right: 0, up: 0, forward: 0, yaw: 0, pitch: 0, fov: round(c.fov, 1) },
     { t: dur, src, right: 2, up: 0, forward: 0.5, yaw: -10, pitch: 0, fov: round(c.fov, 1) },
   ];
   S.sel = 0;
-  // 自由视角：站在基准机位后上方看过去
+  // Free view: look from behind and above the base camera
   const m = cvToThree(c.c2w), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
   m.decompose(p, q, s);
   const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q), up = new THREE.Vector3(0, 1, 0).applyQuaternion(q);
@@ -238,7 +238,7 @@ function renderKeyframesList() {
 }
 
 $("kf-add").onclick = () => {
-  // 在当前预览时间处添加，位姿取前一个关键帧
+  // Add at the current preview time, copying the pose of the previous keyframe
   const dur = +$("duration").value;
   const t = S.path ? +$("scrub").value / +$("fps").value : dur / 2;
   const prev = [...S.keyframes].reverse().find((k) => k.t <= t) || S.keyframes[0];
@@ -315,7 +315,7 @@ function setMode(m) { S.mode = m; $("mode-free").classList.toggle("on", m === "f
 });
 $("model").onchange = (e) => selectModel(e.target.value);
 
-// ---------------------------------------------------------------- 确认与任务
+// ---------------------------------------------------------------- confirm and jobs
 function confirmModal(title, rows, okText) {
   return new Promise((resolve) => {
     $("modal-title").textContent = title;
@@ -352,7 +352,7 @@ $("export-btn").onclick = async () => {
   pollJobs();
 };
 
-// 任务进度和失败原因：后端只给 code + 参数。旧任务（改版前）只有中文 stage 文本，按 state 显示
+// Job progress and failure reason: the backend sends only code + params. Old jobs (before the redesign) only have Chinese stage text, so show them by state
 function stageText(j) {
   if (j.stage_code) {
     const p = j.stage_params || {};
@@ -374,13 +374,13 @@ async function pollJobs() {
   $("render-btn").disabled = !S.path || S.path.too_long || !!d.running || !S.model?.scene_ready;
   $("export-btn").disabled = !!d.running;
   renderJobs();
-  // 场景导出完成后刷新
+  // Refresh once the scene export finishes
   if (wasRunning && !d.running) { const m = await api("/api/models"); S.models = m.models; if (!S.model.scene_ready && S.models.find((x) => x.key === S.model.key)?.scene_ready) selectModel(S.model.key); }
 }
 
 function renderJobs() {
   const jobs = S.jobs || [];
-  // 只在内容变化时重画，避免正在播放的视频被打断
+  // Redraw only when content changes, so a playing video is not interrupted
   const html = jobs.length ? jobs.map((j) => {
     const err = jobErrorText(j);
     return `
@@ -401,7 +401,7 @@ async function pollStatus() {
     const st = await api("/api/status");
     S.status = st;
     renderStatus();
-  } catch { /* 网络抖动时下次再试 */ }
+  } catch { /* transient network error: retry next poll */ }
 }
 
 function renderStatus() {
@@ -410,7 +410,7 @@ function renderStatus() {
   $("gpu").textContent = !st ? t("gpu.none") : st.pods?.length ? t("gpu.on", { names: st.pods.map((p) => p.name).join(", ") }) : t("gpu.off");
 }
 
-// 切换语言：静态文字由 applyStatic 处理，这里重画动态部分
+// Language switch: applyStatic handles static text; redraw the dynamic parts here
 function rerender() {
   if (S.models) renderModelOptions(S.model?.key);
   document.querySelectorAll(".cam img").forEach((img) => { img.alt = t("cam.alt", { name: img.closest(".cam").dataset.cam }); });

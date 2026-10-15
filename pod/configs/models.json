@@ -1,5 +1,5 @@
 {
-  "_comment": "前端可用的已训练 4C4D 模型。路径相对于 Global volume（$ATLAS_VOL）。checkpoint/config 是固定位置，由 atlas-run n3v_repro 训练完自动写入（见 DEPLOY.md）；该位置不存在时，按 fallback_glob 找最近一次 N3V 训练结果",
+  "_comment": "Trained 4C4D models available to the frontend. Paths are relative to the Global volume ($ATLAS_VOL). checkpoint/config are fixed locations written automatically by atlas-run n3v_repro after training (see DEPLOY.md); if they do not exist, the latest N3V training result matching fallback_glob is used. \"title\" is the Chinese UI label, \"title_en\" the English one.",
   "n3v_flame_steak": {
     "title": "N3V flame_steak（厨房做菜，4 机位训练）",
     "title_en": "N3V flame_steak (kitchen scene, trained on 4 cameras)",
@@ -17,6 +17,6 @@
     ],
     "source_seconds": 10.0,
     "source_frames": 300,
-    "license": "Neural 3D Video：CC BY-NC 4.0，仅限研究"
+    "license": "Neural 3D Video: CC BY-NC 4.0, research only"
   }
 }

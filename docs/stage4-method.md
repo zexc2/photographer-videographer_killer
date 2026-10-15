@@ -1,36 +1,36 @@
-# 阶段 4：基线测试方法
+# Stage 4: baseline test method
 
-目标：在同一段 CMU Panoptic 数据（`171204_pose1`，单人大幅度动作）上，分别跑 GEN3C 和 4C4D 各一次。
-1. **评估**：从**评估机位**（cam00，训练时没用过）的位置生成画面，和这个机位真实拍到的画面逐帧比较。
-2. **运镜**：两个模型沿**同一条相机轨迹**生成一段视频，从 GEN3C 的输入机位（cam24）平滑移动到评估机位（cam00），4 秒、121 帧。
-3. **记录**：每一步的耗时、峰值显存和 GPU 花费。
+Goal: on the same CMU Panoptic clip (`171204_pose1`, one person, large movements), run GEN3C and 4C4D once each.
+1. **Evaluation**: generate frames from the position of the **evaluation camera** (cam00, not used in training) and compare frame by frame with what that camera actually captured.
+2. **Camera move**: both models generate a video along **the same camera trajectory**, moving smoothly from GEN3C's input camera (cam24) to the evaluation camera (cam00), 4 seconds, 121 frames.
+3. **Logging**: time, peak GPU memory and GPU cost for every step.
 
-## 两个模型拿到的输入
+## Inputs each model receives
 
 | | GEN3C | 4C4D |
 |---|---|---|
-| 视频 | 1 个机位（cam24） | 4 个机位（cam05、08、24、25） |
-| 相机参数 | **不给真实标定**：深度、位姿、内参都由 ViPE 从视频里估计 | 真实标定（Panoptic，已去畸变） |
-| 模拟的场景 | 一台机器、没有标定 | 现场放 4 台固定手机，事先标定 |
-| 怎么生成新视角 | 预训练的视频扩散模型（7B），把输入画面按深度投影到新视角后"补全" | 针对这一段视频单独训练 4D 高斯（30k 步） |
+| Video | 1 camera (cam24) | 4 cameras (cam05, 08, 24, 25) |
+| Camera parameters | **No ground-truth calibration**: depth, pose and intrinsics all estimated from the video by ViPE | Ground-truth calibration (Panoptic, undistorted) |
+| Scenario simulated | One camera, no calibration | 4 fixed phones at the event, calibrated in advance |
+| How new views are generated | A pretrained video diffusion model (7B) projects the input frames into the new view by depth, then "fills in" the rest | Trains 4D Gaussians specifically for this clip (30k steps) |
 
-## 统一的评估口径（`pod/tools/eval_metrics.py`）
+## Common evaluation protocol (`pod/tools/eval_metrics.py`)
 
-- **帧**：源片段的第 0–120 帧（GEN3C 一次生成 121 帧）。4C4D 另外报告全部 300 帧的分数。
-- **画面**：两个模型、真值都换成同一块 960×528 的区域再比较。GEN3C 输出是 704×1280，对应原图缩放到 720×1280 后上下各裁 8 像素；4C4D 渲染出 960×540，同样上下各裁 6 像素。
-- **指标**：PSNR（越高越好）、SSIM（越高越好，最高 1）、LPIPS（AlexNet，越低越好）。
-- **自检**：画面完全一致时 PSNR 是 100；故意错开 8 像素会掉到 24 dB；把真值按 GEN3C 的流程处理一遍是 38.8 dB（只剩缩放和压缩损失）。
+- **Frames**: frames 0–120 of the source clip (GEN3C generates 121 frames in one go). For 4C4D we also report scores on all 300 frames.
+- **Image**: both models and the ground truth are converted to the same 960×528 region before comparison. GEN3C outputs 704×1280, corresponding to the original resized to 720×1280 with 8 px cropped top and bottom; 4C4D renders 960×540, likewise with 6 px cropped top and bottom.
+- **Metrics**: PSNR (higher is better), SSIM (higher is better, max 1), LPIPS (AlexNet, lower is better).
+- **Self-check**: identical images give PSNR 100; a deliberate 8 px offset drops it to 24 dB; running the ground truth through GEN3C's pipeline gives 38.8 dB (only resizing and compression loss remain).
 
-## 为了公平做的几处处理
+## Steps taken for fairness
 
-1. **主点居中**：Panoptic 相机的主点偏离画面中心最多约 18 像素，而 4C4D 读相机时默认主点在正中心。所以去畸变时同时把主点移到中心，否则 4C4D 每个机位都会有系统性错位。
-2. **不用评估机位挑模型**：4C4D 官方训练只保存"测试集分数最好"的 checkpoint，测试集就是评估机位，这等于看了答案再挑模型。这里只在训练结束时测一次，用的就是最终模型。训练过程中也关掉了反复测试（`exhaust_test`）。
-3. **GEN3C 的尺度对齐**：ViPE 从单目视频估计的深度只是"自认为的米"。用 MASt3R 点云（由真实标定三角化，真实米制）在输入机位上和 ViPE 深度比较，取中位数比例，用它缩放评估机位的相对位移。单目方法做新视角评估时，这是常规做法。
-4. **评估机位不参与任何训练或预处理**：MASt3R 点云只用 4 个训练机位，评估机位的画面只在最后打分时使用。
-5. **不改模型本身**：两个模型都只替换"相机轨迹从哪来"这一个函数（`gen3c_run.py`、`fourc4d_render.py`），渲染和生成流程完全是官方代码。
+1. **Centered principal point**: the Panoptic cameras' principal points are off-center by up to about 18 px, while 4C4D assumes the principal point is exactly at the center when reading cameras. So the principal point is moved to the center during undistortion; otherwise 4C4D would have a systematic misalignment at every camera.
+2. **The evaluation camera is not used to pick the model**: 4C4D's official training keeps only the checkpoint with "the best test-set score", and the test set is the evaluation camera — equivalent to picking the model after seeing the answers. Here we test only once at the end of training, using the final model. Repeated testing during training (`exhaust_test`) is also turned off.
+3. **GEN3C scale alignment**: depth estimated by ViPE from monocular video is only in "what it thinks are meters". We compare ViPE's depth with the MASt3R point cloud (triangulated from the ground-truth calibration, in real meters) at the input camera, take the median ratio, and use it to scale the evaluation camera's relative displacement. This is standard practice when evaluating novel views from monocular methods.
+4. **The evaluation camera takes no part in any training or preprocessing**: the MASt3R point cloud uses only the 4 training cameras; the evaluation camera's images are used only for the final scoring.
+5. **The models themselves are not modified**: for both models we replace only the single function that decides "where the camera trajectory comes from" (`gen3c_run.py`, `fourc4d_render.py`); the rendering and generation pipelines are entirely official code.
 
-## 已知的局限
+## Known limitations
 
-- 只测了一段 10 秒的序列、一个评估机位，结论只能算初步。
-- GEN3C 拿到的信息比 4C4D 少（1 个机位、没有标定），对它不利；但这正是"只放一台机器"方案要回答的问题。
-- 评估机位离 GEN3C 的输入机位 1.26 m、转角 32°，远超 GEN3C 示例里的运镜幅度（约 0.3）。这是有意的压力测试，GEN3C 在这里出现明显瑕疵是预料之中的。
+- Only one 10-second sequence and one evaluation camera were tested, so the conclusions are preliminary.
+- GEN3C gets less information than 4C4D (1 camera, no calibration), which works against it; but that is exactly the question the "only one camera" approach needs to answer.
+- The evaluation camera is 1.26 m and 32° away from GEN3C's input camera, far beyond the camera-move range in GEN3C's examples (about 0.3). This is a deliberate stress test; GEN3C showing obvious flaws here is expected.

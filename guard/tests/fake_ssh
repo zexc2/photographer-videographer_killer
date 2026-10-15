@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 假 SSH：输出 $FAKE_DIR/util 的内容作为 nvidia-smi 结果；文件为 FAIL 时模拟 SSH 不通。
-# 远程命令里带 ATLAS_RUNS_QUERY 时，返回 $FAKE_DIR/runs_status（atlas-run 登记任务的状态：run 状态 结束秒数）
+# Fake SSH: prints the contents of $FAKE_DIR/util as the nvidia-smi result; if the file says FAIL, simulates SSH being unreachable.
+# If the remote command contains ATLAS_RUNS_QUERY, returns $FAKE_DIR/runs_status (status of atlas-run registered runs: run status seconds-since-finish)
 v=$(cat "$FAKE_DIR/util" 2>/dev/null || echo 0)
 [ "$v" = FAIL ] && exit 255
 case "${*: -1}" in

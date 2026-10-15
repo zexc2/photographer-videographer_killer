@@ -1,109 +1,109 @@
-# 基线对比报告：GEN3C vs 4C4D（第一阶段）
+# Baseline comparison report: GEN3C vs 4C4D (phase 1)
 
-> 日期：2026-10-15 ｜ 数据：CMU Panoptic `171204_pose1`（单人大幅度动作，10 秒） ｜ GPU：RunPod A100 80GB SXM（$1.79/h）
-> 方法细节见 [stage4-method.md](stage4-method.md)，数据准备见 [stage3-data.md](stage3-data.md)。
+> Date: 2026-10-15 | Data: CMU Panoptic `171204_pose1` (one person, large movements, 10 s) | GPU: RunPod A100 80GB SXM ($1.79/h)
+> Method details: [stage4-method.md](stage4-method.md); data preparation: [stage3-data.md](stage3-data.md).
 
-## 一句话结论
+## Bottom line
 
-**在"活动现场放 4 台固定手机"的设置下，4C4D 的效果明显更好**：评估机位 PSNR 21.7，GEN3C 是 16.0；4C4D 人物位置、动作都正确，GEN3C 有严重穿帮。但 4C4D **目前的代码不能商用**，而且每 10 秒素材要训练约 2.5 小时。
-两个方案用来做 3–5 分钟的精华片段，GPU 成本都**远低于 $1500**；但用来覆盖整场 8 小时活动都**远超 $1500**。
+**With "4 fixed phones at the event", 4C4D is clearly better**: evaluation-camera PSNR 21.7 vs. 16.0 for GEN3C; 4C4D gets the person's position and motion right, while GEN3C has severe visible artifacts. But 4C4D's **current code cannot be used commercially**, and it takes about 2.5 hours of training per 10 seconds of footage.
+For 3–5 minute highlight reels, both approaches cost **far less than $1,500** in GPU time; for covering an entire 8-hour event, both cost **far more than $1,500**.
 
-## 1. 测试设置
+## 1. Test setup
 
 | | GEN3C | 4C4D |
 |---|---|---|
-| 输入 | **1 个机位**的视频（cam24），相机参数全部由 ViPE 估计 | **4 个机位**的视频 + 真实标定 |
-| 模拟的场景 | 一台机器、没有标定 | 现场 4 台固定手机，事先标定 |
-| 原理 | 预训练的 7B 视频扩散模型，把画面按深度投影到新视角后"补全" | 针对这段视频单独训练 4D 高斯（30k 步） |
-| 评估 | 两个模型都从**评估机位 cam00**（训练时没用过）生成画面，和 cam00 真实拍到的画面逐帧比较。统一口径：同样的 121 帧、同样 960×528 的画面区域 | 同左 |
+| Input | Video from **1 camera** (cam24); all camera parameters estimated by ViPE | Video from **4 cameras** + ground-truth calibration |
+| Scenario simulated | One camera, no calibration | 4 fixed phones at the event, calibrated in advance |
+| How it works | A pretrained 7B video diffusion model projects the frames into the new view by depth, then "fills in" the rest | Trains 4D Gaussians specifically for this clip (30k steps) |
+| Evaluation | Both models generate frames from the **evaluation camera cam00** (not used in training), compared frame by frame against what cam00 actually captured. Same protocol: the same 121 frames, the same 960×528 image region | Same |
 
-## 2. 客观指标（评估机位）
+## 2. Objective metrics (evaluation camera)
 
-| 方案 | PSNR ↑ | SSIM ↑ | LPIPS ↓ | 备注 |
+| Approach | PSNR ↑ | SSIM ↑ | LPIPS ↓ | Notes |
 |---|---|---|---|---|
-| GEN3C（1 机位） | 15.96 | 0.661 | 0.578 | 121 帧；逐帧 PSNR 14.9–16.7 |
-| **4C4D（4 机位）** | **21.74** | **0.818** | **0.378** | 121 帧；逐帧 PSNR 20.8–22.0 |
-| 4C4D，全部 300 帧 | 21.83 | 0.818 | 0.375 | 10 秒内质量稳定 |
+| GEN3C (1 camera) | 15.96 | 0.661 | 0.578 | 121 frames; per-frame PSNR 14.9–16.7 |
+| **4C4D (4 cameras)** | **21.74** | **0.818** | **0.378** | 121 frames; per-frame PSNR 20.8–22.0 |
+| 4C4D, all 300 frames | 21.83 | 0.818 | 0.375 | Quality stable over the 10 s |
 
-- PSNR 每高 3 dB，像素误差大约减半。4C4D 比 GEN3C 高 **5.8 dB**，感知差异（LPIPS）低 **35%**。
-- 4C4D 两次独立训练，训练脚本最后的自测分别是 21.42 和 21.69，**结果可复现**。
-- 作为参考：同一套口径下，"真实画面缩放、压缩一遍"能到 38.8 dB。两个方案离"以假乱真"都还很远。
+- Every 3 dB of PSNR roughly halves the pixel error. 4C4D is **5.8 dB** higher than GEN3C, with **35%** lower perceptual difference (LPIPS).
+- Two independent 4C4D training runs scored 21.42 and 21.69 on the training script's final self-test, so **the result is reproducible**.
+- For reference: under the same protocol, "the real footage resized and compressed once" reaches 38.8 dB. Both approaches are still far from indistinguishable from reality.
 
-## 3. 主观问题（看视频）
+## 3. Subjective issues (watching the videos)
 
-| 问题 | GEN3C | 4C4D |
+| Issue | GEN3C | 4C4D |
 |---|---|---|
-| 人物位置、大小 | ❌ 错位、偏小；运镜后半段人物被放大 | ✅ 正确 |
-| 动作是否和真实一致 | ⚠️ 大致跟随，但姿态变形 | ✅ 时间、姿态都对得上 |
-| 人物变形 | ❌ 中段明显变形 | ⚠️ 不变形，但脸和衣服纹理发糊、有噪点 |
-| 闪烁 | ⚠️ 背景纹理跳动 | ⚠️ 轻微 |
-| 穿帮 | ❌ **运镜终点出现两个人**；评估视角中段大面积幻觉 | ⚠️ 空中漂浮黑色污点（3DGS 常见的"漂浮物"） |
-| 背景 | ❌ 墙面结构错位、模糊 | ✅ 干净、准确 |
+| Person's position and size | ❌ Misplaced and too small; the person gets enlarged in the second half of the camera move | ✅ Correct |
+| Motion matches reality | ⚠️ Roughly follows, but the pose is distorted | ✅ Timing and pose both match |
+| Person distortion | ❌ Clearly distorted in the middle | ⚠️ No distortion, but face and clothing texture are blurry and noisy |
+| Flicker | ⚠️ Background texture jumps | ⚠️ Slight |
+| Visible artifacts | ❌ **Two people appear at the end of the camera move**; large hallucinated areas mid-way in the evaluation view | ⚠️ Black specks floating in the air (the "floaters" common in 3DGS) |
+| Background | ❌ Wall structure misaligned and blurry | ✅ Clean and accurate |
 
-**GEN3C 差的主要原因不是生成模型本身，而是 ViPE 把相机焦距估错了一倍**（估成 2807，真实 1400），深度尺度也差了 1.55 倍。3D 结构从一开始就是错的。手机和 Insta360 的内参只需要一次性标定就能拿到，所以"GEN3C + 已标定相机"的效果还需要再测一次（见第 7 节）。
+**The main reason GEN3C does poorly is not the generative model itself, but that ViPE got the camera focal length wrong by a factor of two** (estimated 2807 vs. a true 1400), and the depth scale is off by 1.55×. The 3D structure was wrong from the start. Phone and Insta360 intrinsics can be obtained with a one-time calibration, so "GEN3C + calibrated camera" needs to be tested again (see section 7).
 
-## 4. 耗时、显存、花费（实测）
+## 4. Time, GPU memory, cost (measured)
 
-| 步骤 | GEN3C | 4C4D |
+| Step | GEN3C | 4C4D |
 |---|---|---|
-| 环境准备（从 Global volume 恢复环境包） | 约 1 分钟 | 约 2 分钟 |
-| 数据预处理 | ViPE 估计深度和位姿：**11.4 分钟 / 10 秒素材** | MASt3R 初始点云：1.5 分钟 |
-| 加载模型 | 约 4 分钟（71 GB 权重） | — |
-| 生成 / 训练 | **约 16 分钟 / 每段 5 秒输出**（121 帧，704×1280） | **训练 2 小时 27 分钟 / 每 10 秒素材**（30k 步，960×540，420 万个高斯点） |
-| 渲染 | （生成即输出） | 300 帧评估视角 + 121 帧运镜共约 9 分钟（含加载）；训练好之后可以任意改运镜，几乎不要钱 |
-| 峰值显存 | **44 GB**（T5 文本编码器放在 CPU） | **24.6 GB** |
-| 本次测试的 GPU 花费 | 约 $1.4（ViPE + 加载 + 2 段生成） | 约 $4.8（训练 + 渲染） |
+| Environment setup (restore environment pack from the Global volume) | about 1 minute | about 2 minutes |
+| Data preprocessing | ViPE depth and pose estimation: **11.4 minutes per 10 s of footage** | MASt3R initial point cloud: 1.5 minutes |
+| Model loading | about 4 minutes (71 GB of weights) | — |
+| Generation / training | **about 16 minutes per 5 s of output** (121 frames, 704×1280) | **Training 2 h 27 min per 10 s of footage** (30k steps, 960×540, 4.2 million Gaussians) |
+| Rendering | (generation is the output) | 300 evaluation-view frames + 121 camera-move frames, about 9 minutes total (including loading); once trained, the camera move can be changed freely at almost no cost |
+| Peak GPU memory | **44 GB** (T5 text encoder on CPU) | **24.6 GB** |
+| GPU cost of this test | about $1.4 (ViPE + loading + 2 generated clips) | about $4.8 (training + rendering) |
 
-## 5. 换算成一场 8 小时活动的成本
+## 5. Converting to the cost of one 8-hour event
 
-**假设**：只算 GPU 费用，不算人工、设备、存储；按本次实测速度。
+**Assumptions**: GPU cost only — no labor, equipment or storage; at the speeds measured in this test.
 
-| 交付内容 | GEN3C（A100） | 4C4D（A100） | 4C4D（换 48 GB 便宜卡，**待实测**） |
+| Deliverable | GEN3C (A100) | 4C4D (A100) | 4C4D (cheaper 48 GB card, **to be measured**) |
 |---|---|---|---|
-| 单位成本 | 每 5 秒输出约 20 分钟 GPU（ViPE + 生成）≈ **$0.61** | 每 10 秒素材约 2.63 小时 GPU ≈ **$4.71**，同一段可以渲染多条运镜 | RTX A6000 / A40 $0.33–0.59/h；如果速度和 A100 相当，约 **$0.9–1.6 / 10 秒** |
-| **精华片段 3 分钟**的运镜镜头 | 36 段 → 约 **$22** | 18 段 → 约 **$85** | 约 **$16–28** |
-| **精华片段 5 分钟**的运镜镜头 | 60 段 → 约 **$37** | 30 段 → 约 **$141** | 约 **$26–47** |
-| 覆盖整场 **8 小时**（全程都有虚拟运镜） | 5,760 段 → 约 **$3,500** | 2,880 段 → 约 **$13,600** | 约 $2,500–4,500 |
-| 对比 $1500 摄像师报价 | 精华片段 ✅ 远低于；全程 ❌ 超出 | 精华片段 ✅ 远低于；全程 ❌ 超出 | 精华片段 ✅；全程 ❌ |
+| Unit cost | About 20 GPU-minutes per 5 s of output (ViPE + generation) ≈ **$0.61** | About 2.63 GPU-hours per 10 s of footage ≈ **$4.71**; multiple camera moves can be rendered from the same clip | RTX A6000 / A40 $0.33–0.59/h; if speed is comparable to A100, about **$0.9–1.6 per 10 s** |
+| Camera-move shots for a **3-minute highlight reel** | 36 clips → about **$22** | 18 clips → about **$85** | about **$16–28** |
+| Camera-move shots for a **5-minute highlight reel** | 60 clips → about **$37** | 30 clips → about **$141** | about **$26–47** |
+| Covering the entire **8 hours** (virtual camera moves throughout) | 5,760 clips → about **$3,500** | 2,880 clips → about **$13,600** | about $2,500–4,500 |
+| Compared with a $1,500 videographer quote | Highlights ✅ far below; full event ❌ over | Highlights ✅ far below; full event ❌ over | Highlights ✅; full event ❌ |
 
-**结论**：
-- 按 GPU 成本算，**"AI 运镜精华片段"商业上可行**，每场几十到一百多美元。
-- "替代摄像师拍完整场"现在**不可行**，GPU 成本已经超过人工报价，而且还没算处理时间：4C4D 处理 8 小时素材需要几千 GPU 小时。
-- 现实的产品形态：**现场固定机位拍完整场 + 事后挑出精彩时刻做 AI 运镜**，作为摄像服务的增值项，而不是取代摄像师。
+**Conclusions**:
+- On GPU cost, **"AI camera-move highlight reels" are commercially viable**, at tens to a bit over a hundred dollars per event.
+- "Replacing the videographer for the whole event" is **not viable** today: GPU cost already exceeds the labor quote, and that's before processing time — 4C4D would need thousands of GPU-hours for 8 hours of footage.
+- A realistic product: **fixed cameras record the whole event + AI camera moves on hand-picked highlights afterwards**, as an add-on to the videography service rather than a replacement for the videographer.
 
-## 6. 能否商用
+## 6. Commercial use
 
-| 组件 | 许可 | 能否商用 | 原因 |
+| Component | License | Commercial use? | Reason |
 |---|---|---|---|
-| GEN3C 代码 | Apache-2.0 | ✅ | |
-| GEN3C / Cosmos 权重 | NVIDIA Open Model License | ⚠️ **有条件** | 模型卡写明"关闭安全护栏会自动终止许可"，而官方推理脚本强制关闭了护栏。商用前必须开启护栏，或者向 NVIDIA 确认 |
+| GEN3C code | Apache-2.0 | ✅ | |
+| GEN3C / Cosmos weights | NVIDIA Open Model License | ⚠️ **Conditional** | The model card states that "disabling the safety guardrails automatically terminates the license", while the official inference script forces the guardrails off. Before commercial use, the guardrails must be enabled, or this must be confirmed with NVIDIA |
 | T5-11B | Apache-2.0 | ✅ | |
-| ViPE 代码 | Apache-2.0（Unik3D 部分 CC BY-NC-SA） | ⚠️ | 默认流程用到的 UniDepth 等深度模型是非商业许可（待逐个核实）。如果相机已标定，可以换用可商用的深度模型 |
-| 4C4D 代码 | MIT，但内含 Inria 3DGS 光栅化器 | ❌ | Inria 光栅化器仅限非商业、研究和评估用途 |
-| MASt3R | CC BY-NC-SA 4.0；权重还受训练数据集许可约束 | ❌ | 非商业 |
-| CMU Panoptic | 仅限研究 | ❌（只是测试数据） | 商用时使用自己拍的素材，不受影响 |
+| ViPE code | Apache-2.0 (Unik3D portion CC BY-NC-SA) | ⚠️ | Depth models used in the default pipeline, such as UniDepth, are non-commercial (to be verified one by one). If the cameras are calibrated, a commercially usable depth model can be swapped in |
+| 4C4D code | MIT, but bundles the Inria 3DGS rasterizer | ❌ | The Inria rasterizer is restricted to non-commercial, research and evaluation use |
+| MASt3R | CC BY-NC-SA 4.0; weights also bound by training-dataset licenses | ❌ | Non-commercial |
+| CMU Panoptic | Research only | ❌ (test data only) | Commercial use would use our own footage, so not affected |
 
-**小结**：
-- **GEN3C 路线**：有条件可商用，需要解决护栏条款，并替换 ViPE 的非商业深度模型。
-- **4C4D 路线**：现在不能商用，需要把光栅化器和点云初始化替换成可商用的实现，见第 7 节的调研。
+**Summary**:
+- **GEN3C route**: conditionally usable commercially; the guardrail clause must be resolved, and ViPE's non-commercial depth models replaced.
+- **4C4D route**: not commercially usable today; the rasterizer and point-cloud initialization must be replaced with commercially usable implementations — see the survey in section 7.
 
-## 6.5 复现验证：4C4D 效果一般是数据难，不是我们的问题
+## 6.5 Reproduction check: 4C4D's mediocre results come from hard data, not from our setup
 
-为了确认 4C4D 在 Panoptic 上效果一般的原因，按官方设置在论文用的 N3V flame_steak 上复现了一次（详见 [reproduction-n3v.md](reproduction-n3v.md)）：
-- **我们的复现：PSNR 24.16 / DSSIM1 0.074 / LPIPS 0.114；论文：23.72 / 0.075 / 0.114**，结果吻合。
-- 结论：环境和参数没有问题。Panoptic 上低 2.5 dB，是因为我们选的 4 个机位围着人分布在约 145° 的弧上，彼此重叠少；N3V 是一排朝同一方向的相机。
-- 对实拍的启示：机位要集中在一个方向，相邻夹角不超过约 30°；虚拟运镜也要待在机位覆盖的范围内。
+To confirm why 4C4D does only moderately well on Panoptic, we reproduced it with the official settings on N3V flame_steak, the data used in the paper (details in [reproduction-n3v.md](reproduction-n3v.md)):
+- **Our reproduction: PSNR 24.16 / DSSIM1 0.074 / LPIPS 0.114; paper: 23.72 / 0.075 / 0.114** — the results match.
+- Conclusion: the environment and parameters are fine. The 2.5 dB drop on Panoptic is because the 4 cameras we chose surround the person on an arc of about 145°, with little overlap between them; N3V is a row of cameras all facing the same direction.
+- Implication for real shoots: cameras should be concentrated in one direction, with no more than about 30° between neighbors; virtual camera moves should also stay within the area covered by the cameras.
 
-## 7. 建议的下一步（由 Joey 决定）
+## 7. Suggested next steps (Joey decides)
 
-1. **可商用的稀疏视角 4DGS 方案**（4C4D 胜出时按约定要做）：调研见 [commercial-4dgs-alternatives.md](commercial-4dgs-alternatives.md)。结论是没有现成的；建议用 gsplat（Apache-2.0）+ MapAnything Apache 版权重，移植 4DGS / 4C4D 的思路，估计 1–2 周工程量。
-2. **GEN3C + 真实内参**：排除 ViPE 估错焦距的影响，约 $0.6。如果效果大幅提升，"一台已标定的相机"方案值得继续。
-3. **GEN3C 多机位模式**（4 机位、子弹时间定格运镜）：约 $1.3。定格环绕是活动摄像里很受欢迎的效果。
-4. **降低 4C4D 成本**：在 RTX A6000 / A40 上实测速度；试 15k 步代替 30k 步，看画质损失多少。
-5. 在 `160906_band1`（三人演奏、互相遮挡，更像活动现场）上重复一次，确认结论。
+1. **A commercially usable sparse-view 4DGS approach** (required by our agreement if 4C4D wins): survey in [commercial-4dgs-alternatives.md](commercial-4dgs-alternatives.md). Conclusion: nothing ready-made exists; we suggest gsplat (Apache-2.0) + MapAnything's Apache weights, porting the ideas of 4DGS / 4C4D, an estimated 1–2 weeks of engineering.
+2. **GEN3C + true intrinsics**: rule out the effect of ViPE's wrong focal length, about $0.6. If quality improves a lot, the "one calibrated camera" approach is worth pursuing.
+3. **GEN3C multi-view mode** (4 cameras, bullet-time freeze-frame camera move): about $1.3. Freeze-frame orbits are a very popular effect in event videography.
+4. **Lower 4C4D's cost**: measure speed on RTX A6000 / A40; try 15k steps instead of 30k and see how much quality is lost.
+5. Repeat on `160906_band1` (three people playing music, occluding each other — closer to a real event) to confirm the conclusions.
 
-## 附：结果文件（不进仓库）
+## Appendix: result files (not in the repo)
 
-- 服务器 `~/runs/20261014-070012-baseline/out/videos/`：GEN3C 评估对比视频、运镜视频
-- 服务器 `~/runs/20261014-223624-fourc4d/out/videos/`：4C4D 评估对比视频、运镜视频、**两个模型的运镜并排对比** `171204_pose1_path_side_by_side.mp4`
-- Global volume `results/`：原分辨率视频、4C4D 模型和全部渲染图
+- Server `~/runs/20261014-070012-baseline/out/videos/`: GEN3C evaluation comparison video, camera-move video
+- Server `~/runs/20261014-223624-fourc4d/out/videos/`: 4C4D evaluation comparison video, camera-move video, **side-by-side camera-move comparison of both models** `171204_pose1_path_side_by_side.mp4`
+- Global volume `results/`: full-resolution videos, the 4C4D model and all rendered images

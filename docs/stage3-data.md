@@ -1,62 +1,62 @@
-# 阶段 3：CMU Panoptic 测试数据
+# Stage 3: CMU Panoptic test data
 
-## 为什么用 CMU Panoptic
+## Why CMU Panoptic
 
-[CMU Panoptic Studio](http://domedb.perception.cs.cmu.edu/) 是一个球形拍摄棚，墙上装了 31 台同步的 1080p 高清相机，每台都有精确的内参和外参标定。用它可以模拟"活动现场放几台固定机位"的情况。没有被选作输入的相机拍到的画面，正好用来检验 AI 生成的结果对不对。
+[CMU Panoptic Studio](http://domedb.perception.cs.cmu.edu/) is a spherical capture dome with 31 synchronized 1080p HD cameras mounted on its walls, each with precise intrinsic and extrinsic calibration. It lets us simulate "a few fixed cameras at an event". The footage from cameras not chosen as input is exactly what we need to check whether the AI-generated results are right.
 
-许可：**仅限非商业研究用途**。本仓库不包含任何 Panoptic 图像或视频，只有下载和转换脚本；数据直接下载到 RunPod 的 Global volume。
+License: **non-commercial research only**. This repo contains no Panoptic images or videos, only download and conversion scripts; the data is downloaded directly to the RunPod Global volume.
 
-## 选了哪两段
+## The two sequences we chose
 
-| 序列 | 内容 | 为什么选它 | 截取 |
+| Sequence | Content | Why we chose it | Clip |
 |---|---|---|---|
-| `171204_pose1` | 一个人做大幅度伸展动作 | 单人、动作清楚、背景简单：最适合看"人物会不会变形" | 第 30 秒起 10 秒，300 帧 |
-| `160906_band1` | 三个人围坐弹吉他、打手鼓 | 最像活动现场：多人、互相遮挡、细小的手部动作 | 第 20 秒起 10 秒，300 帧 |
+| `171204_pose1` | One person doing large stretching movements | Single person, clear motion, simple background: best for seeing "does the person get distorted" | 10 s starting at 30 s, 300 frames |
+| `160906_band1` | Three people sitting in a circle playing guitar and hand drums | Closest to a real event: multiple people, occlusion, small hand movements | 10 s starting at 20 s, 300 frames |
 
-两段只下载需要的 10 秒：用 ffmpeg 发 HTTP 范围请求截取，每个机位只有几十 MB。整段视频单个机位最大 3 GB，而 CMU 服务器实测只有约 3.5 MB/s。
+For both, only the needed 10 seconds are downloaded: ffmpeg clips them with HTTP range requests, so each camera is only a few dozen MB. A full video is up to 3 GB per camera, and the CMU server measured only about 3.5 MB/s.
 
-## 机位怎么选
+## How the cameras were chosen
 
-先用标定算出 31 台相机的位置，再抓每个机位的一帧缩略图，判断人朝哪个方向。只用最低一层相机，离地 1.2–1.5 m，接近手机放在三脚架上的高度。
+First we computed the positions of all 31 cameras from the calibration, then grabbed one thumbnail frame per camera to see which way the person faces. Only the lowest ring of cameras is used, 1.2–1.5 m above the floor — close to the height of a phone on a tripod.
 
-| 序列 | 4C4D 输入（4 台） | **评估机位**（不参与训练） | GEN3C 输入（1 台） |
+| Sequence | 4C4D input (4 cameras) | **Evaluation camera** (not used in training) | GEN3C input (1 camera) |
 |---|---|---|---|
-| 171204_pose1 | cam05、08、24、25：围绕人的正面，覆盖约 145° | **cam00**：正前方，位于 cam24 和 cam25 之间的空隙 | cam24（距评估机位 1.26 m，转角 32°） |
-| 160906_band1 | cam03、08、09、14 | **cam23**：位于 cam14 和 cam09 之间 | cam14 |
+| 171204_pose1 | cam05, 08, 24, 25: around the front of the person, covering about 145° | **cam00**: directly in front, in the gap between cam24 and cam25 | cam24 (1.26 m from the evaluation camera, 32° rotation) |
+| 160906_band1 | cam03, 08, 09, 14 | **cam23**: between cam14 and cam09 | cam14 |
 
-配置文件：[`pod/configs/panoptic.json`](../pod/configs/panoptic.json)。
+Config file: [`pod/configs/panoptic.json`](../pod/configs/panoptic.json).
 
-### 评估机位是做什么的
+### What the evaluation camera is for
 
-它相当于**考试的标准答案**。模型只看到输入机位的画面，然后让它从评估机位的位置"虚拟拍摄"，再拿同一时刻评估机位真实拍到的画面逐帧对比，得到客观分数：
+It's the **answer key for the exam**. The model only sees the input cameras' footage; we then have it "virtually shoot" from the evaluation camera's position and compare, frame by frame, with what the evaluation camera actually captured at the same moment, giving objective scores:
 
-- **PSNR**：像素误差，越高越好
-- **SSIM**：结构相似度，越高越好（最高 1）
-- **LPIPS**：人眼感知差异，越低越好
+- **PSNR**: pixel error, higher is better
+- **SSIM**: structural similarity, higher is better (max 1)
+- **LPIPS**: perceptual difference to the human eye, lower is better
 
-这回答的正是商业上的问题：**在现场没有放相机的位置，AI 生成的画面有多接近真实。**
+This answers exactly the business question: **at a position where no camera was placed at the event, how close is the AI-generated image to reality?**
 
-### 两个模型的输入不对等
+### The two models get unequal inputs
 
-- **4C4D**：4 个机位的视频 + 已知标定。这是"现场放 4 台固定手机"的设置。
-- **GEN3C**：只有 1 个机位的视频。相机位置、深度、内参全部由 ViPE 从视频里估计，不给真实标定。这是"只有一台机器、没有标定"的设置。
+- **4C4D**: video from 4 cameras + known calibration. This is the "4 fixed phones at the event" setup.
+- **GEN3C**: video from only 1 camera. Camera position, depth and intrinsics are all estimated from the video by ViPE; no ground-truth calibration is given. This is the "one camera, no calibration" setup.
 
-对比报告会注明这一点。GEN3C 也有多视角模式（`gen3c_multiview`），如果单机位效果不够，阶段 4 再试。
+The comparison report notes this. GEN3C also has a multi-view mode (`gen3c_multiview`); if single-camera results aren't good enough, we'll try it in stage 4.
 
-## 数据处理流程（`atlas-run panoptic`，在 pod 上运行）
+## Data processing pipeline (`atlas-run panoptic`, runs on the pod)
 
-1. **下载**：下载标定 JSON，截取各机位的 300 帧。截取的片段存到 Global volume 的 `datasets/panoptic/<序列>/raw/`，以后不用再联网。
-2. **去畸变**：Panoptic 相机有镜头畸变，4C4D 只支持无畸变的 PINHOLE 相机，所以按标定参数逐帧去畸变。输出 `images/camXX_YYYY.png`。
-3. **COLMAP 模型**：每个机位写一条记录，单位从**厘米换成米**。3DGS 的相机远裁剪面是 100，用厘米的话 2.7 m 外的人会被裁掉。
-4. **初始点云**：用 MASt3R 对 4 个训练机位两两做稠密匹配，再用已知位姿三角化，得到 `points3D.txt`（`pod/tools/mast3r_posed_points.py`）。官方流程用的是 MAtCha 的 posed 模式，思路相同，但 MAtCha 没法打包。**评估机位不参与**，避免"偷看答案"。
-5. **GEN3C 输入**：输入机位做成视频 → ViPE 估计深度、位姿、内参。同时记录 ViPE 估计的焦距和真实标定差多少。
-6. **打包**：所有结果打成一个 `stage3.tar` 存到 Global volume（对象存储适合大文件）。缩略图、点云投影检查图、指标拉回服务器，**不进仓库**。
+1. **Download**: download the calibration JSON and clip 300 frames from each camera. The clips are saved to `datasets/panoptic/<sequence>/raw/` on the Global volume, so no network access is needed later.
+2. **Undistortion**: Panoptic cameras have lens distortion and 4C4D only supports undistorted PINHOLE cameras, so each frame is undistorted using the calibration parameters. Output: `images/camXX_YYYY.png`.
+3. **COLMAP model**: one entry per camera, with units converted **from centimeters to meters**. The 3DGS camera far clipping plane is 100, so in centimeters a person 2.7 m away would be clipped.
+4. **Initial point cloud**: run MASt3R dense matching on every pair of the 4 training cameras, then triangulate with the known poses to get `points3D.txt` (`pod/tools/mast3r_posed_points.py`). The official pipeline uses MAtCha's posed mode — same idea, but MAtCha can't be packed. **The evaluation camera is excluded**, to avoid "peeking at the answers".
+5. **GEN3C input**: turn the input camera into a video → ViPE estimates depth, pose and intrinsics. We also record how far ViPE's estimated focal length is from the true calibration.
+6. **Packaging**: everything is packed into a single `stage3.tar` on the Global volume (object storage suits large files). Thumbnails, point-cloud projection check images and metrics are pulled back to the server, **not committed to the repo**.
 
-## 已经在服务器上验证过的部分
+## What has already been verified on the server
 
-用真实下载的 5 帧做了离线测试（服务器不跑模型）：
-- 截取、去畸变、COLMAP 文件、GEN3C 视频、meta.json 都正常生成。
-- **坐标约定检查**：在世界原点画一根 0→1.8 m 的竖线投影到 5 个机位，全部落在站在场地中央的人身上，从脚到头。说明单位（米）、旋转和平移的约定，以及去畸变都正确。
-- **三角化检查**：合成三维点投影到两台相机，加 0.3 像素噪声后再三角化，误差中位数小于 1 mm。
+Offline tests with 5 real downloaded frames (no models run on the server):
+- Clipping, undistortion, COLMAP files, GEN3C video and meta.json are all generated correctly.
+- **Coordinate convention check**: a vertical line from 0 to 1.8 m drawn at the world origin and projected into 5 cameras lands on the person standing in the middle of the stage every time, from feet to head. This shows the units (meters), the rotation and translation conventions, and the undistortion are all correct.
+- **Triangulation check**: synthetic 3D points projected into two cameras, with 0.3 px noise added, then triangulated again: median error under 1 mm.
 
-MASt3R 匹配和 ViPE 只能在 pod 上跑。到时候会把点云投影到每个机位，包括评估机位，生成检查图来验证。
+MASt3R matching and ViPE can only run on the pod. When they do, we'll project the point cloud into every camera, including the evaluation camera, and generate check images to verify.
